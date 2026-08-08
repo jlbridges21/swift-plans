@@ -16,9 +16,13 @@ import {
   snapStairsTranslation,
   type SnapGuide,
 } from "@/lib/plan/snap";
-import { listOpenings } from "@/lib/plan/openings";
-import { openingWorldSpan } from "@/lib/plan/openings";
+import { listOpenings, openingWorldSpan } from "@/lib/plan/openings";
 import { stairsPolygon } from "@/lib/plan/stairs";
+import {
+  hitTest,
+  type HitSelectionState,
+  type HitTarget,
+} from "@/lib/plan/hit-test";
 import {
   DEFAULT_PLAN_STYLE,
   type PlanStyleSettings,
@@ -36,6 +40,12 @@ export type CameraViewBox = {
   h: number;
 };
 
+export type CanvasContextRequest = {
+  clientX: number;
+  clientY: number;
+  hit: HitTarget;
+};
+
 type EditorCanvasProps = {
   geometry: FloorGeometry;
   style?: PlanStyleSettings;
@@ -44,11 +54,17 @@ type EditorCanvasProps = {
   selectedOpeningId: string | null;
   selectedStairsId: string | null;
   selectedVertexIndex: number | null;
+  labelSelected: boolean;
+  reshape: boolean;
+  /** When true, drags on the selected room always translate the room. */
+  moveLocked: boolean;
   onSelectRoom: (roomId: string | null) => void;
   onSelectWall: (wallId: string | null) => void;
   onSelectOpening: (openingId: string | null) => void;
   onSelectStairs: (stairsId: string | null) => void;
   onSelectVertex: (roomId: string, vertexIndex: number) => void;
+  onSelectLabel: (roomId: string | null) => void;
+  onClearSelection: () => void;
   onMoveRoom: (roomId: string, dx: number, dy: number) => void;
   onMoveOpening: (openingId: string, offsetIn: number) => void;
   onMoveStairs: (stairsId: string, dx: number, dy: number) => void;
@@ -63,11 +79,18 @@ type EditorCanvasProps = {
   onDocumentGestureStart: () => void;
   onDocumentGestureEnd: () => void;
   onInteractionChange: (active: boolean) => void;
+  onContextMenuRequest: (req: CanvasContextRequest) => void;
+  onZoomToFitRef?: React.MutableRefObject<(() => void) | null>;
+  onSelectionAnchorRef?: React.MutableRefObject<
+    (() => { x: number; y: number } | null) | null
+  >;
 };
 
 const MIN_VIEW_IN = 24;
 const MAX_VIEW_IN = 12000;
 const FIT_PADDING = 1.12;
+const LONG_PRESS_MS = 500;
+const DRAG_THRESHOLD_PX = 10;
 
 function clampView(view: CameraViewBox): CameraViewBox {
   const w = Math.min(MAX_VIEW_IN, Math.max(MIN_VIEW_IN, view.w));
@@ -98,7 +121,7 @@ function fitView(
     h = w / viewAspect;
   } else {
     h = content.height * FIT_PADDING;
-    w = h * viewAspect;
+    w = h / viewAspect;
   }
   return clampView({
     x: content.minX + content.width / 2 - w / 2,
@@ -114,6 +137,17 @@ type ActiveGesture =
       pointerId: number;
       lastClientX: number;
       lastClientY: number;
+    }
+  | {
+      kind: "pending";
+      pointerId: number;
+      hit: HitTarget;
+      startClientX: number;
+      startClientY: number;
+      lastClientX: number;
+      lastClientY: number;
+      longPressTimer: ReturnType<typeof setTimeout> | null;
+      suppressedContext: boolean;
     }
   | {
       kind: "move-room";
@@ -163,9 +197,19 @@ type ActiveGesture =
       lastMidY: number;
     };
 
+function pixelsPerInch(
+  svg: SVGSVGElement | null,
+  view: CameraViewBox,
+): number {
+  if (!svg) return 1;
+  const rect = svg.getBoundingClientRect();
+  if (rect.width <= 0 || view.w <= 0) return 1;
+  return rect.width / view.w;
+}
+
 /**
- * Interactive plan canvas: PlanDocument + separate hit/selection overlay.
- * Camera is viewBox-only — never mutates geometry for zoom/pan.
+ * Interactive plan canvas: PlanDocument + selection overlay.
+ * Hit testing is pure (hitTest) — not DOM z-order.
  */
 export function EditorCanvas({
   geometry,
@@ -175,11 +219,16 @@ export function EditorCanvas({
   selectedOpeningId,
   selectedStairsId,
   selectedVertexIndex,
+  labelSelected,
+  reshape,
+  moveLocked,
   onSelectRoom,
   onSelectWall,
   onSelectOpening,
   onSelectStairs,
   onSelectVertex,
+  onSelectLabel,
+  onClearSelection,
   onMoveRoom,
   onMoveOpening,
   onMoveStairs,
@@ -189,26 +238,61 @@ export function EditorCanvas({
   onDocumentGestureStart,
   onDocumentGestureEnd,
   onInteractionChange,
+  onContextMenuRequest,
+  onZoomToFitRef,
+  onSelectionAnchorRef,
 }: EditorCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const geometryRef = useRef(geometry);
+  const selectionRef = useRef({
+    selectedRoomId,
+    selectedWallId,
+    selectedOpeningId,
+    selectedStairsId,
+    labelSelected,
+    reshape,
+    moveLocked,
+  });
   const [view, setView] = useState<CameraViewBox>(() =>
     fitView(geometry, 390, 520),
   );
   const viewRef = useRef(view);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+  const gestureRef = useRef<ActiveGesture | null>(null);
+  const didInitialFit = useRef(false);
+  const prevRoomCount = useRef(geometry.rooms.length);
+  const contextCbRef = useRef(onContextMenuRequest);
+  useEffect(() => {
+    contextCbRef.current = onContextMenuRequest;
+  }, [onContextMenuRequest]);
 
   useEffect(() => {
     geometryRef.current = geometry;
   }, [geometry]);
 
   useEffect(() => {
+    selectionRef.current = {
+      selectedRoomId,
+      selectedWallId,
+      selectedOpeningId,
+      selectedStairsId,
+      labelSelected,
+      reshape,
+      moveLocked,
+    };
+  }, [
+    selectedRoomId,
+    selectedWallId,
+    selectedOpeningId,
+    selectedStairsId,
+    labelSelected,
+    reshape,
+    moveLocked,
+  ]);
+
+  useEffect(() => {
     viewRef.current = view;
   }, [view]);
-
-  const gestureRef = useRef<ActiveGesture | null>(null);
-  const didInitialFit = useRef(false);
-  const prevRoomCount = useRef(geometry.rooms.length);
 
   const clientToWorld = useCallback((clientX: number, clientY: number) => {
     const svg = svgRef.current;
@@ -219,6 +303,18 @@ export function EditorCanvas({
     return {
       x: v.x + ((clientX - rect.left) / rect.width) * v.w,
       y: v.y + ((clientY - rect.top) / rect.height) * v.h,
+    };
+  }, []);
+
+  const worldToClient = useCallback((world: PlanPoint) => {
+    const svg = svgRef.current;
+    const v = viewRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    return {
+      x: rect.left + ((world.x - v.x) / v.w) * rect.width,
+      y: rect.top + ((world.y - v.y) / v.h) * rect.height,
     };
   }, []);
 
@@ -233,6 +329,48 @@ export function EditorCanvas({
       ),
     );
   }, []);
+
+  useEffect(() => {
+    if (onZoomToFitRef) onZoomToFitRef.current = applyFit;
+  }, [applyFit, onZoomToFitRef]);
+
+  useEffect(() => {
+    if (!onSelectionAnchorRef) return;
+    onSelectionAnchorRef.current = () => {
+      const g = geometryRef.current;
+      const s = selectionRef.current;
+      if (s.selectedStairsId) {
+        const stair = g.stairs.find((st) => st.id === s.selectedStairsId);
+        if (!stair) return null;
+        const poly = stairsPolygon(stair);
+        const cx = poly.reduce((a, p) => a + p.x, 0) / poly.length;
+        const cy = poly.reduce((a, p) => a + p.y, 0) / poly.length;
+        return worldToClient({ x: cx, y: cy });
+      }
+      if (s.selectedOpeningId) {
+        const op = listOpenings(g).find((o) => o.id === s.selectedOpeningId);
+        if (!op) return null;
+        const span = openingWorldSpan(g.rooms, op);
+        if (!span) return null;
+        return worldToClient({
+          x: (span.start.x + span.end.x) / 2,
+          y: (span.start.y + span.end.y) / 2,
+        });
+      }
+      if (s.selectedWallId) {
+        const wall = g.walls.find((w) => w.id === s.selectedWallId);
+        if (!wall || wall.centerline.length < 2) return null;
+        const mid = wall.centerline[Math.floor(wall.centerline.length / 2)]!;
+        return worldToClient(mid);
+      }
+      if (s.selectedRoomId) {
+        const room = g.rooms.find((r) => r.id === s.selectedRoomId);
+        if (!room) return null;
+        return worldToClient(room.labelAnchor);
+      }
+      return null;
+    };
+  }, [onSelectionAnchorRef, worldToClient]);
 
   useEffect(() => {
     if (didInitialFit.current) return;
@@ -274,9 +412,7 @@ export function EditorCanvas({
     const count = geometry.rooms.length;
     if (prevRoomCount.current !== count) {
       prevRoomCount.current = count;
-      if (didInitialFit.current) {
-        applyFit();
-      }
+      if (didInitialFit.current) applyFit();
     }
   }, [geometry.rooms.length, applyFit]);
 
@@ -320,19 +456,242 @@ export function EditorCanvas({
     onInteractionChange(true);
   }
 
-  function onPointerDown(e: ReactPointerEvent<SVGSVGElement>) {
-    const existing = gestureRef.current;
+  function clearLongPress(g: ActiveGesture | null) {
+    if (g && g.kind === "pending" && g.longPressTimer) {
+      clearTimeout(g.longPressTimer);
+      g.longPressTimer = null;
+    }
+  }
 
+  function selectionState(): HitSelectionState {
+    const s = selectionRef.current;
+    return {
+      selectedRoomId: s.selectedRoomId,
+      selectedWallId: s.selectedWallId,
+      selectedOpeningId: s.selectedOpeningId,
+      selectedStairsId: s.selectedStairsId,
+      labelSelected: s.labelSelected,
+      reshape: s.reshape,
+    };
+  }
+
+  function resolveHit(clientX: number, clientY: number): HitTarget {
+    const world = clientToWorld(clientX, clientY);
+    const ppi = pixelsPerInch(svgRef.current, viewRef.current);
+    return hitTest(geometryRef.current, world, selectionState(), ppi);
+  }
+
+  function applyTapSelection(hit: HitTarget) {
+    switch (hit.kind) {
+      case "pan":
+        onClearSelection();
+        break;
+      case "room":
+        onSelectRoom(hit.roomId);
+        break;
+      case "wall":
+        onSelectWall(hit.wallId);
+        break;
+      case "opening":
+        onSelectOpening(hit.openingId);
+        break;
+      case "stairs":
+        onSelectStairs(hit.stairsId);
+        break;
+      case "label":
+        onSelectLabel(hit.roomId);
+        break;
+      case "vertex":
+        onSelectVertex(hit.roomId, hit.vertexIndex);
+        break;
+      case "edge-insert": {
+        const room = geometryRef.current.rooms.find((r) => r.id === hit.roomId);
+        if (!room) break;
+        const a = room.polygon[hit.edgeIndex]!;
+        const b = room.polygon[(hit.edgeIndex + 1) % room.polygon.length]!;
+        const world = {
+          x: (a.x + b.x) / 2,
+          y: (a.y + b.y) / 2,
+        };
+        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        const offset =
+          ((world.x - a.x) * (b.x - a.x) + (world.y - a.y) * (b.y - a.y)) / len;
+        onSelectRoom(hit.roomId);
+        onInsertVertex(hit.roomId, hit.edgeIndex, offset);
+        break;
+      }
+    }
+  }
+
+  function startMoveRoom(
+    pointerId: number,
+    roomId: string,
+    clientX: number,
+    clientY: number,
+  ) {
+    const world = clientToWorld(clientX, clientY);
+    onSelectRoom(roomId);
+    gestureRef.current = {
+      kind: "move-room",
+      pointerId,
+      roomId,
+      lastClientX: clientX,
+      lastClientY: clientY,
+      lastWorldX: world.x,
+      lastWorldY: world.y,
+    };
+    onDocumentGestureStart();
+    onInteractionChange(true);
+  }
+
+  function promotePendingToDrag(g: Extract<ActiveGesture, { kind: "pending" }>) {
+    clearLongPress(g);
+    const hit = g.hit;
+    const s = selectionRef.current;
+
+    if (hit.kind === "pan") {
+      onClearSelection();
+      gestureRef.current = {
+        kind: "pan",
+        pointerId: g.pointerId,
+        lastClientX: g.lastClientX,
+        lastClientY: g.lastClientY,
+      };
+      return;
+    }
+
+    if (hit.kind === "vertex") {
+      onSelectVertex(hit.roomId, hit.vertexIndex);
+      gestureRef.current = {
+        kind: "move-vertex",
+        pointerId: g.pointerId,
+        roomId: hit.roomId,
+        vertexIndex: hit.vertexIndex,
+        lastClientX: g.lastClientX,
+        lastClientY: g.lastClientY,
+      };
+      onDocumentGestureStart();
+      return;
+    }
+
+    if (hit.kind === "label" && s.labelSelected) {
+      gestureRef.current = {
+        kind: "move-label",
+        pointerId: g.pointerId,
+        roomId: hit.roomId,
+        lastClientX: g.lastClientX,
+        lastClientY: g.lastClientY,
+      };
+      onDocumentGestureStart();
+      return;
+    }
+
+    if (
+      hit.kind === "opening" &&
+      s.selectedOpeningId === hit.openingId &&
+      !s.moveLocked
+    ) {
+      gestureRef.current = {
+        kind: "move-opening",
+        pointerId: g.pointerId,
+        openingId: hit.openingId,
+        lastClientX: g.lastClientX,
+        lastClientY: g.lastClientY,
+      };
+      onDocumentGestureStart();
+      return;
+    }
+
+    if (
+      hit.kind === "stairs" &&
+      s.selectedStairsId === hit.stairsId &&
+      !s.moveLocked
+    ) {
+      const world = clientToWorld(g.lastClientX, g.lastClientY);
+      gestureRef.current = {
+        kind: "move-stairs",
+        pointerId: g.pointerId,
+        stairsId: hit.stairsId,
+        lastClientX: g.lastClientX,
+        lastClientY: g.lastClientY,
+        lastWorldX: world.x,
+        lastWorldY: world.y,
+      };
+      onDocumentGestureStart();
+      return;
+    }
+
+    if ("roomId" in hit) {
+      startMoveRoom(g.pointerId, hit.roomId, g.lastClientX, g.lastClientY);
+      return;
+    }
+    if (s.selectedRoomId) {
+      startMoveRoom(
+        g.pointerId,
+        s.selectedRoomId,
+        g.lastClientX,
+        g.lastClientY,
+      );
+      return;
+    }
+
+    if (hit.kind === "stairs") {
+      const world = clientToWorld(g.lastClientX, g.lastClientY);
+      onSelectStairs(hit.stairsId);
+      gestureRef.current = {
+        kind: "move-stairs",
+        pointerId: g.pointerId,
+        stairsId: hit.stairsId,
+        lastClientX: g.lastClientX,
+        lastClientY: g.lastClientY,
+        lastWorldX: world.x,
+        lastWorldY: world.y,
+      };
+      onDocumentGestureStart();
+      return;
+    }
+
+    gestureRef.current = {
+      kind: "pan",
+      pointerId: g.pointerId,
+      lastClientX: g.lastClientX,
+      lastClientY: g.lastClientY,
+    };
+  }
+
+  function onPointerDown(e: ReactPointerEvent<SVGSVGElement>) {
+    if (e.button === 2) {
+      e.preventDefault();
+      const hit = resolveHit(e.clientX, e.clientY);
+      applyTapSelection(hit);
+      contextCbRef.current({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        hit,
+      });
+      return;
+    }
+    if (e.button !== 0) return;
+
+    const existing = gestureRef.current;
     if (
       existing &&
       (existing.kind === "pan" ||
+        existing.kind === "pending" ||
         existing.kind === "move-room" ||
         existing.kind === "move-opening" ||
         existing.kind === "move-stairs" ||
         existing.kind === "move-label" ||
         existing.kind === "move-vertex")
     ) {
-      if (existing.kind !== "pan") {
+      if (existing.kind === "pending") clearLongPress(existing);
+      if (
+        existing.kind === "move-room" ||
+        existing.kind === "move-opening" ||
+        existing.kind === "move-stairs" ||
+        existing.kind === "move-label" ||
+        existing.kind === "move-vertex"
+      ) {
         onDocumentGestureEnd();
       }
       beginPinch(
@@ -352,32 +711,52 @@ export function EditorCanvas({
       return;
     }
 
-    const target = e.target as Element;
-    const hitVertex = target.closest("[data-vertex-hit]");
-    const vertexRoomId = hitVertex?.getAttribute("data-vertex-hit");
-    const vertexIndexRaw = hitVertex?.getAttribute("data-vertex-index");
-    const hitEdgeInsert = target.closest("[data-edge-insert]");
-    const insertRoomId = hitEdgeInsert?.getAttribute("data-edge-insert");
-    const insertEdgeRaw = hitEdgeInsert?.getAttribute("data-edge-index");
-    const hitLabel = target.closest("[data-label-hit]");
-    const labelRoomId = hitLabel?.getAttribute("data-label-hit") ?? null;
-    const hitOpening = target.closest("[data-opening-hit]");
-    const openingId = hitOpening?.getAttribute("data-opening-hit") ?? null;
-    const hitStairs = target.closest("[data-stairs-hit]");
-    const stairsId = hitStairs?.getAttribute("data-stairs-hit") ?? null;
-    const hitWall = target.closest("[data-wall-hit]");
-    const wallId = hitWall?.getAttribute("data-wall-hit") ?? null;
-    const hitRoom = target.closest("[data-room-hit]");
-    const roomId = hitRoom?.getAttribute("data-room-hit") ?? null;
+    const hit = resolveHit(e.clientX, e.clientY);
+    const s = selectionRef.current;
 
-    if (vertexRoomId != null && vertexIndexRaw != null) {
-      const vertexIndex = Number(vertexIndexRaw);
-      onSelectVertex(vertexRoomId, vertexIndex);
+    if (hit.kind === "pan") {
+      const pending: Extract<ActiveGesture, { kind: "pending" }> = {
+        kind: "pending",
+        pointerId: e.pointerId,
+        hit,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        lastClientX: e.clientX,
+        lastClientY: e.clientY,
+        longPressTimer: null,
+        suppressedContext: false,
+      };
+      pending.longPressTimer = setTimeout(() => {
+        const cur = gestureRef.current;
+        if (!cur || cur.kind !== "pending" || cur.pointerId !== e.pointerId) {
+          return;
+        }
+        cur.suppressedContext = true;
+        clearLongPress(cur);
+        applyTapSelection(cur.hit);
+        contextCbRef.current({
+          clientX: cur.lastClientX,
+          clientY: cur.lastClientY,
+          hit: cur.hit,
+        });
+        gestureRef.current = null;
+        onInteractionChange(false);
+      }, LONG_PRESS_MS);
+      gestureRef.current = pending;
+      onInteractionChange(true);
+      (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
+
+    // Immediate reshape / label / already-selected manipulators
+    if (hit.kind === "vertex" && s.reshape) {
+      onSelectVertex(hit.roomId, hit.vertexIndex);
       gestureRef.current = {
         kind: "move-vertex",
         pointerId: e.pointerId,
-        roomId: vertexRoomId,
-        vertexIndex,
+        roomId: hit.roomId,
+        vertexIndex: hit.vertexIndex,
         lastClientX: e.clientX,
         lastClientY: e.clientY,
       };
@@ -388,29 +767,17 @@ export function EditorCanvas({
       return;
     }
 
-    if (insertRoomId != null && insertEdgeRaw != null) {
-      const edgeIndex = Number(insertEdgeRaw);
-      const room = geometryRef.current.rooms.find((r) => r.id === insertRoomId);
-      if (room) {
-        const a = room.polygon[edgeIndex]!;
-        const b = room.polygon[(edgeIndex + 1) % room.polygon.length]!;
-        const world = clientToWorld(e.clientX, e.clientY);
-        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-        const offset =
-          ((world.x - a.x) * (b.x - a.x) + (world.y - a.y) * (b.y - a.y)) / len;
-        onSelectRoom(insertRoomId);
-        onInsertVertex(insertRoomId, edgeIndex, offset);
-      }
+    if (hit.kind === "edge-insert" && s.reshape) {
+      applyTapSelection(hit);
       e.preventDefault();
       return;
     }
 
-    if (labelRoomId) {
-      onSelectRoom(labelRoomId);
+    if (hit.kind === "label" && s.labelSelected) {
       gestureRef.current = {
         kind: "move-label",
         pointerId: e.pointerId,
-        roomId: labelRoomId,
+        roomId: hit.roomId,
         lastClientX: e.clientX,
         lastClientY: e.clientY,
       };
@@ -421,12 +788,15 @@ export function EditorCanvas({
       return;
     }
 
-    if (openingId) {
-      onSelectOpening(openingId);
+    if (
+      hit.kind === "opening" &&
+      s.selectedOpeningId === hit.openingId &&
+      !s.moveLocked
+    ) {
       gestureRef.current = {
         kind: "move-opening",
         pointerId: e.pointerId,
-        openingId,
+        openingId: hit.openingId,
         lastClientX: e.clientX,
         lastClientY: e.clientY,
       };
@@ -437,13 +807,16 @@ export function EditorCanvas({
       return;
     }
 
-    if (stairsId) {
-      onSelectStairs(stairsId);
+    if (
+      hit.kind === "stairs" &&
+      s.selectedStairsId === hit.stairsId &&
+      !s.moveLocked
+    ) {
       const world = clientToWorld(e.clientX, e.clientY);
       gestureRef.current = {
         kind: "move-stairs",
         pointerId: e.pointerId,
-        stairsId,
+        stairsId: hit.stairsId,
         lastClientX: e.clientX,
         lastClientY: e.clientY,
         lastWorldX: world.x,
@@ -456,41 +829,35 @@ export function EditorCanvas({
       return;
     }
 
-    if (wallId) {
-      onSelectWall(wallId);
-      e.preventDefault();
-      return;
-    }
-
-    if (roomId) {
-      onSelectRoom(roomId);
-      const world = clientToWorld(e.clientX, e.clientY);
-      gestureRef.current = {
-        kind: "move-room",
-        pointerId: e.pointerId,
-        roomId,
-        lastClientX: e.clientX,
-        lastClientY: e.clientY,
-        lastWorldX: world.x,
-        lastWorldY: world.y,
-      };
-      onDocumentGestureStart();
-      onInteractionChange(true);
-      (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
-      e.preventDefault();
-      return;
-    }
-
-    onSelectRoom(null);
-    onSelectWall(null);
-    onSelectOpening(null);
-    onSelectStairs(null);
-    gestureRef.current = {
-      kind: "pan",
+    // Rooms and sub-elements: pending — tap selects, drag moves, long-press menus
+    const pending: Extract<ActiveGesture, { kind: "pending" }> = {
+      kind: "pending",
       pointerId: e.pointerId,
+      hit,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
       lastClientX: e.clientX,
       lastClientY: e.clientY,
+      longPressTimer: null,
+      suppressedContext: false,
     };
+    pending.longPressTimer = setTimeout(() => {
+      const cur = gestureRef.current;
+      if (!cur || cur.kind !== "pending" || cur.pointerId !== e.pointerId) {
+        return;
+      }
+      cur.suppressedContext = true;
+      clearLongPress(cur);
+      applyTapSelection(cur.hit);
+      contextCbRef.current({
+        clientX: cur.lastClientX,
+        clientY: cur.lastClientY,
+        hit: cur.hit,
+      });
+      gestureRef.current = null;
+      onInteractionChange(false);
+    }, LONG_PRESS_MS);
+    gestureRef.current = pending;
     onInteractionChange(true);
     (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -509,7 +876,6 @@ export function EditorCanvas({
       const midX = (pts[0].x + pts[1].x) / 2;
       const midY = (pts[0].y + pts[1].y) / 2;
       zoomAt(midX, midY, g.lastDist / dist);
-
       const svg = svgRef.current;
       if (svg) {
         const rect = svg.getBoundingClientRect();
@@ -518,10 +884,22 @@ export function EditorCanvas({
         const dy = ((midY - g.lastMidY) / rect.height) * v.h;
         setView((prev) => ({ ...prev, x: prev.x - dx, y: prev.y - dy }));
       }
-
       g.lastDist = dist;
       g.lastMidX = midX;
       g.lastMidY = midY;
+      return;
+    }
+
+    if (g.kind === "pending" && e.pointerId === g.pointerId) {
+      g.lastClientX = e.clientX;
+      g.lastClientY = e.clientY;
+      const moved = Math.hypot(
+        e.clientX - g.startClientX,
+        e.clientY - g.startClientY,
+      );
+      if (moved > DRAG_THRESHOLD_PX) {
+        promotePendingToDrag(g);
+      }
       return;
     }
 
@@ -545,13 +923,8 @@ export function EditorCanvas({
       g.lastClientX = e.clientX;
       g.lastClientY = e.clientY;
       if (dx === 0 && dy === 0) return;
-
-      const svg = svgRef.current;
-      const rect = svg?.getBoundingClientRect();
-      const v = viewRef.current;
-      const pxPerIn = rect && rect.width > 0 ? rect.width / v.w : 1;
-      const thresholdIn = ROOM_SNAP_THRESHOLD_PX / pxPerIn;
-
+      const ppi = pixelsPerInch(svgRef.current, viewRef.current);
+      const thresholdIn = ROOM_SNAP_THRESHOLD_PX / ppi;
       const snapped = snapRoomTranslation(
         geometryRef.current,
         g.roomId,
@@ -562,7 +935,6 @@ export function EditorCanvas({
       setSnapGuides(snapped.guides);
       dx = snapped.dx;
       dy = snapped.dy;
-
       g.lastWorldX = world.x;
       g.lastWorldY = world.y;
       onMoveRoom(g.roomId, dx, dy);
@@ -577,15 +949,12 @@ export function EditorCanvas({
         (o) => o.id === g.openingId,
       );
       if (!opening) return;
-      const room = geometryRef.current.rooms.find((r) => r.id === opening.roomId);
-      if (!room) return;
       const span = openingWorldSpan(geometryRef.current.rooms, opening);
       if (!span) return;
       const edge = span.edge;
       const proj =
         (world.x - edge.a.x) * edge.dir.x + (world.y - edge.a.y) * edge.dir.y;
-      const newOffset = proj - opening.widthIn / 2;
-      onMoveOpening(g.openingId, newOffset);
+      onMoveOpening(g.openingId, proj - opening.widthIn / 2);
       return;
     }
 
@@ -596,11 +965,8 @@ export function EditorCanvas({
       g.lastClientX = e.clientX;
       g.lastClientY = e.clientY;
       if (dx === 0 && dy === 0) return;
-      const svg = svgRef.current;
-      const rect = svg?.getBoundingClientRect();
-      const v = viewRef.current;
-      const pxPerIn = rect && rect.width > 0 ? rect.width / v.w : 1;
-      const thresholdIn = ROOM_SNAP_THRESHOLD_PX / pxPerIn;
+      const ppi = pixelsPerInch(svgRef.current, viewRef.current);
+      const thresholdIn = ROOM_SNAP_THRESHOLD_PX / ppi;
       const snapped = snapStairsTranslation(
         geometryRef.current,
         g.stairsId,
@@ -618,8 +984,7 @@ export function EditorCanvas({
     if (g.kind === "move-label" && e.pointerId === g.pointerId) {
       g.lastClientX = e.clientX;
       g.lastClientY = e.clientY;
-      const world = clientToWorld(e.clientX, e.clientY);
-      onMoveLabel(g.roomId, world);
+      onMoveLabel(g.roomId, clientToWorld(e.clientX, e.clientY));
       return;
     }
 
@@ -627,11 +992,8 @@ export function EditorCanvas({
       g.lastClientX = e.clientX;
       g.lastClientY = e.clientY;
       const world = clientToWorld(e.clientX, e.clientY);
-      const svg = svgRef.current;
-      const rect = svg?.getBoundingClientRect();
-      const v = viewRef.current;
-      const pxPerIn = rect && rect.width > 0 ? rect.width / v.w : 1;
-      const thresholdIn = ROOM_SNAP_THRESHOLD_PX / pxPerIn;
+      const ppi = pixelsPerInch(svgRef.current, viewRef.current);
+      const thresholdIn = ROOM_SNAP_THRESHOLD_PX / ppi;
       const snapped = snapOrthoPoint(
         world,
         collectSnapTargets(geometryRef.current, g.roomId),
@@ -655,6 +1017,17 @@ export function EditorCanvas({
     }
 
     if (e.pointerId !== g.pointerId) return;
+
+    if (g.kind === "pending") {
+      clearLongPress(g);
+      if (!g.suppressedContext) {
+        applyTapSelection(g.hit);
+      }
+      gestureRef.current = null;
+      onInteractionChange(false);
+      return;
+    }
+
     const wasDocument =
       g.kind === "move-room" ||
       g.kind === "move-opening" ||
@@ -670,14 +1043,11 @@ export function EditorCanvas({
   const selectedRoom = geometry.rooms.find((r) => r.id === selectedRoomId);
   const selectedWall = geometry.walls.find((w) => w.id === selectedWallId);
   const openings = listOpenings(geometry);
-
-  // ~24px hit stroke in document inches at current zoom
-  const hitStrokeIn = Math.max(8, (24 * view.w) / 390);
-  const labelHitR = Math.max(
+  const guidePad = Math.max(view.w, view.h);
+  const handleR = Math.max(
     planTokens.labelHitRadiusIn,
     (22 * view.w) / 390,
   );
-  const guidePad = Math.max(view.w, view.h);
 
   return (
     <div className="relative h-full min-h-0 w-full flex-1">
@@ -692,134 +1062,11 @@ export function EditorCanvas({
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
+        onContextMenu={(e) => e.preventDefault()}
       >
         <PlanDocument geometry={geometry} style={style} />
 
-        <g data-editor-overlay="true">
-          {geometry.rooms.map((room) => (
-            <path
-              key={`hit-${room.id}`}
-              data-room-hit={room.id}
-              d={pointsToPath(room.polygon)}
-              fill="transparent"
-              stroke="transparent"
-              strokeWidth={12}
-              style={{ cursor: "grab", touchAction: "none" }}
-            />
-          ))}
-
-          {geometry.stairs.map((stair) => (
-            <path
-              key={`hit-stairs-${stair.id}`}
-              data-stairs-hit={stair.id}
-              d={pointsToPath(stairsPolygon(stair))}
-              fill="transparent"
-              stroke="transparent"
-              strokeWidth={12}
-              style={{ cursor: "grab", touchAction: "none" }}
-            />
-          ))}
-
-          {/* Wall hits above rooms so shared/exterior edges stay selectable */}
-          {geometry.walls.map((wall) => {
-            const d = pointsToPath(wall.centerline, false);
-            return (
-              <path
-                key={`hit-wall-${wall.id}`}
-                data-wall-hit={wall.id}
-                d={d}
-                fill="none"
-                stroke="transparent"
-                strokeWidth={hitStrokeIn}
-                strokeLinecap="round"
-                style={{ cursor: "pointer", touchAction: "none" }}
-              />
-            );
-          })}
-
-          {openings.map((op) => {
-            const span = openingWorldSpan(geometry.rooms, op);
-            if (!span) return null;
-            return (
-              <line
-                key={`hit-op-${op.id}`}
-                data-opening-hit={op.id}
-                x1={span.start.x}
-                y1={span.start.y}
-                x2={span.end.x}
-                y2={span.end.y}
-                stroke="transparent"
-                strokeWidth={hitStrokeIn}
-                strokeLinecap="round"
-                style={{ cursor: "grab", touchAction: "none" }}
-              />
-            );
-          })}
-
-          {/* Labels above room fills so drag does not start a room move */}
-          {geometry.rooms.map((room) => (
-            <circle
-              key={`hit-label-${room.id}`}
-              data-label-hit={room.id}
-              cx={room.labelAnchor.x}
-              cy={room.labelAnchor.y}
-              r={labelHitR}
-              fill="transparent"
-              style={{ cursor: "grab", touchAction: "none" }}
-            />
-          ))}
-
-          {selectedRoom
-            ? selectedRoom.polygon.map((p, i) => {
-                const next =
-                  selectedRoom.polygon[(i + 1) % selectedRoom.polygon.length]!;
-                const mx = (p.x + next.x) / 2;
-                const my = (p.y + next.y) / 2;
-                return (
-                  <g key={`vert-tools-${selectedRoom.id}-${i}`}>
-                    <circle
-                      data-edge-insert={selectedRoom.id}
-                      data-edge-index={i}
-                      cx={mx}
-                      cy={my}
-                      r={labelHitR * 0.85}
-                      fill="transparent"
-                      style={{ cursor: "copy", touchAction: "none" }}
-                    />
-                    <circle
-                      cx={mx}
-                      cy={my}
-                      r={3}
-                      fill="#2563eb"
-                      opacity={0.7}
-                      pointerEvents="none"
-                    />
-                    <circle
-                      data-vertex-hit={selectedRoom.id}
-                      data-vertex-index={i}
-                      cx={p.x}
-                      cy={p.y}
-                      r={labelHitR}
-                      fill="transparent"
-                      style={{ cursor: "grab", touchAction: "none" }}
-                    />
-                    <rect
-                      x={p.x - 4}
-                      y={p.y - 4}
-                      width={8}
-                      height={8}
-                      fill={
-                        selectedVertexIndex === i ? "#2563eb" : planTokens.ink
-                      }
-                      stroke={planTokens.paper}
-                      strokeWidth={1}
-                      pointerEvents="none"
-                    />
-                  </g>
-                );
-              })
-            : null}
-
+        <g data-editor-overlay="true" pointerEvents="none">
           {selectedRoom ? (
             <path
               d={pointsToPath(selectedRoom.polygon)}
@@ -827,7 +1074,6 @@ export function EditorCanvas({
               stroke={planTokens.ink}
               strokeWidth={2.5}
               strokeDasharray="8 6"
-              pointerEvents="none"
             />
           ) : null}
 
@@ -839,7 +1085,6 @@ export function EditorCanvas({
               strokeWidth={Math.max(selectedWall.thickness, 4)}
               strokeLinecap="round"
               opacity={0.85}
-              pointerEvents="none"
             />
           ) : null}
 
@@ -858,7 +1103,6 @@ export function EditorCanvas({
                     stroke="#2563eb"
                     strokeWidth={4}
                     strokeLinecap="round"
-                    pointerEvents="none"
                   />
                 );
               })()
@@ -877,10 +1121,50 @@ export function EditorCanvas({
                     stroke="#2563eb"
                     strokeWidth={2.5}
                     strokeDasharray="8 6"
-                    pointerEvents="none"
                   />
                 );
               })()
+            : null}
+
+          {labelSelected && selectedRoom ? (
+            <circle
+              cx={selectedRoom.labelAnchor.x}
+              cy={selectedRoom.labelAnchor.y}
+              r={handleR * 0.45}
+              fill="#2563eb"
+              opacity={0.85}
+            />
+          ) : null}
+
+          {reshape && selectedRoom
+            ? selectedRoom.polygon.map((p, i) => {
+                const next =
+                  selectedRoom.polygon[(i + 1) % selectedRoom.polygon.length]!;
+                const mx = (p.x + next.x) / 2;
+                const my = (p.y + next.y) / 2;
+                return (
+                  <g key={`reshape-${selectedRoom.id}-${i}`}>
+                    <circle
+                      cx={mx}
+                      cy={my}
+                      r={3}
+                      fill="#2563eb"
+                      opacity={0.7}
+                    />
+                    <rect
+                      x={p.x - 4}
+                      y={p.y - 4}
+                      width={8}
+                      height={8}
+                      fill={
+                        selectedVertexIndex === i ? "#2563eb" : planTokens.ink
+                      }
+                      stroke={planTokens.paper}
+                      strokeWidth={1}
+                    />
+                  </g>
+                );
+              })
             : null}
 
           {snapGuides.map((g, i) =>
@@ -895,7 +1179,6 @@ export function EditorCanvas({
                 strokeWidth={1}
                 strokeDasharray="4 4"
                 opacity={0.7}
-                pointerEvents="none"
               />
             ) : (
               <line
@@ -908,7 +1191,6 @@ export function EditorCanvas({
                 strokeWidth={1}
                 strokeDasharray="4 4"
                 opacity={0.7}
-                pointerEvents="none"
               />
             ),
           )}

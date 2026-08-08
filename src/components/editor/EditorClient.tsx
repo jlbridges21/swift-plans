@@ -10,12 +10,21 @@ import {
 } from "react";
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
 import {
+  EditorActionBar,
+  type ActionBarItem,
+} from "@/components/editor/EditorActionBar";
+import {
+  EditorContextMenu,
+  type ContextMenuItem,
+} from "@/components/editor/EditorContextMenu";
+import {
   RoomSheet,
   type RoomSheetMode,
 } from "@/components/editor/RoomSheet";
 import { RoomTypePicker } from "@/components/editor/RoomTypePicker";
 import { RenameProjectForm } from "@/components/projects/ProjectManageForms";
 import { Button } from "@/components/ui/Button";
+import type { HitTarget } from "@/lib/plan/hit-test";
 import { saveFloorGeometry, saveProjectStyleSettings } from "@/lib/plan/actions";
 import {
   addFloor,
@@ -220,6 +229,22 @@ export function EditorClient({
   const [floorActionBusy, setFloorActionBusy] = useState(false);
   const [style, setStyle] = useState(() => initialStyle);
   const [styleSheetOpen, setStyleSheetOpen] = useState(false);
+  const [reshape, setReshape] = useState(false);
+  const [labelSelected, setLabelSelected] = useState(false);
+  const [moveLocked, setMoveLocked] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    clientX: number;
+    clientY: number;
+    hit: HitTarget;
+  } | null>(null);
+  const [actionAnchor, setActionAnchor] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const zoomToFitRef = useRef<(() => void) | null>(null);
+  const selectionAnchorRef = useRef<
+    (() => { x: number; y: number } | null) | null
+  >(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [interacting, setInteracting] = useState(false);
   const [typing, setTyping] = useState(false);
@@ -559,7 +584,18 @@ export function EditorClient({
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (typingRef.current || sheet || typePickerOpen || floorSheet || styleSheetOpen) return;
+      if (typingRef.current || sheet || typePickerOpen || floorSheet || styleSheetOpen || contextMenu) {
+        if (e.key === "Escape" && contextMenu) {
+          e.preventDefault();
+          setContextMenu(null);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        clearSelection();
+        return;
+      }
       const mod = e.metaKey || e.ctrlKey;
       if (!mod || e.key.toLowerCase() !== "z") return;
       e.preventDefault();
@@ -568,7 +604,7 @@ export function EditorClient({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [floorSheet, handleRedo, handleUndo, sheet, styleSheetOpen, typePickerOpen]);
+  }, [contextMenu, floorSheet, handleRedo, handleUndo, sheet, styleSheetOpen, typePickerOpen]);
 
   function clearSelection() {
     setSelectedRoomId(null);
@@ -577,6 +613,9 @@ export function EditorClient({
     setSelectedStairsId(null);
     setSelectedVertexIndex(null);
     setTypePickerOpen(false);
+    setReshape(false);
+    setLabelSelected(false);
+    setMoveLocked(false);
   }
 
   const switchFloor = useCallback(
@@ -776,6 +815,387 @@ export function EditorClient({
     });
   }, [geometry.rooms, geometry.walls, selectedWallId, wallCanAdjoin]);
 
+  useEffect(() => {
+    const update = () => {
+      setActionAnchor(selectionAnchorRef.current?.() ?? null);
+    };
+    update();
+    const id = window.setInterval(update, 250);
+    window.addEventListener("resize", update);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("resize", update);
+    };
+  }, [
+    selectedRoomId,
+    selectedWallId,
+    selectedOpeningId,
+    selectedStairsId,
+    reshape,
+    labelSelected,
+    geometry,
+  ]);
+
+  function contextMenuItems(hit: HitTarget): ContextMenuItem[] {
+    if (hit.kind === "pan") {
+      return [
+        { id: "add-room", label: "Add room" },
+        { id: "zoom-fit", label: "Zoom to fit" },
+      ];
+    }
+    if (hit.kind === "room" || hit.kind === "label" || hit.kind === "vertex") {
+      return [
+        { id: "move-room", label: "Move room" },
+        { id: "rename", label: "Rename" },
+        { id: "edit-dims", label: "Edit dimensions" },
+        { id: "change-type", label: "Change room type" },
+        { id: "reshape", label: reshape ? "Done reshaping" : "Reshape" },
+        { id: "move-label", label: "Move label" },
+        { id: "add-adjoining", label: "Add adjoining room" },
+        { id: "delete-room", label: "Delete room", danger: true },
+      ];
+    }
+    if (hit.kind === "wall") {
+      const items: ContextMenuItem[] = [
+        { id: "add-door", label: "Add door" },
+        { id: "add-window", label: "Add window" },
+        { id: "add-opening", label: "Add opening" },
+      ];
+      if (canAdjoinWall(geometry, hit.wallId)) {
+        items.push({ id: "add-adjoining", label: "Add adjoining room" });
+      }
+      return items;
+    }
+    if (hit.kind === "opening") {
+      const op = listOpenings(geometry).find((o) => o.id === hit.openingId);
+      const items: ContextMenuItem[] = [
+        { id: "opening-width", label: "Change width" },
+      ];
+      if (op?.kind === "door") {
+        items.push(
+          { id: "flip-swing", label: "Flip swing" },
+          { id: "flip-hinge", label: "Flip hinge" },
+        );
+      }
+      items.push({ id: "delete-opening", label: "Delete", danger: true });
+      return items;
+    }
+    if (hit.kind === "stairs") {
+      return [
+        { id: "stairs-rotate", label: "Rotate" },
+        { id: "stairs-flip", label: "Flip direction" },
+        { id: "stairs-resize", label: "Resize" },
+        { id: "delete-stairs", label: "Delete", danger: true },
+      ];
+    }
+    return [];
+  }
+
+  function runContextAction(id: string, hit: HitTarget) {
+    switch (id) {
+      case "add-room":
+        setTyping(true);
+        setSheet({ kind: "add" });
+        break;
+      case "zoom-fit":
+        zoomToFitRef.current?.();
+        break;
+      case "move-room":
+        if (hit.kind === "room" || hit.kind === "label" || hit.kind === "vertex") {
+          setSelectedRoomId(hit.roomId);
+          setMoveLocked(true);
+          setLabelSelected(false);
+          setReshape(false);
+        }
+        break;
+      case "rename":
+      case "edit-dims": {
+        const roomId =
+          hit.kind === "room" || hit.kind === "label" || hit.kind === "vertex"
+            ? hit.roomId
+            : selectedRoomId;
+        const room = geometry.rooms.find((r) => r.id === roomId);
+        if (!room) break;
+        setSelectedRoomId(room.id);
+        const size = roomSizeInches(room);
+        setTyping(true);
+        setSheet({
+          kind: "edit",
+          roomId: room.id,
+          name: room.name,
+          widthIn: size.width,
+          depthIn: size.depth,
+        });
+        break;
+      }
+      case "change-type": {
+        const roomId =
+          hit.kind === "room" || hit.kind === "label" || hit.kind === "vertex"
+            ? hit.roomId
+            : selectedRoomId;
+        if (roomId) {
+          setSelectedRoomId(roomId);
+          setTypePickerOpen(true);
+        }
+        break;
+      }
+      case "reshape":
+        if (hit.kind === "room" || hit.kind === "label" || hit.kind === "vertex") {
+          setSelectedRoomId(hit.roomId);
+        }
+        setReshape((v) => !v);
+        setLabelSelected(false);
+        setMoveLocked(false);
+        break;
+      case "move-label":
+        if (hit.kind === "room" || hit.kind === "label" || hit.kind === "vertex") {
+          setSelectedRoomId(hit.roomId);
+          setLabelSelected(true);
+          setReshape(false);
+        }
+        break;
+      case "add-adjoining":
+        if (hit.kind === "wall") {
+          setSelectedWallId(hit.wallId);
+          if (canAdjoinWall(geometry, hit.wallId)) {
+            const span = exteriorWallFloorSpan(
+              geometry.rooms,
+              hit.wallId,
+              geometry.walls,
+            );
+            if (span) {
+              setTyping(true);
+              setSheet({
+                kind: "adjoin",
+                wallId: hit.wallId,
+                defaultWidthIn: span.length,
+              });
+            }
+          }
+        } else if (selectedWallId && wallCanAdjoin) {
+          openAdjoinSheet();
+        } else if (hit.kind === "room") {
+          // Pick longest exterior wall of the room for adjoin
+          const walls = geometry.walls.filter(
+            (w) => w.kind === "exterior" && w.roomIds.includes(hit.roomId),
+          );
+          const wall = walls[0];
+          if (wall && canAdjoinWall(geometry, wall.id)) {
+            setSelectedRoomId(hit.roomId);
+            setSelectedWallId(wall.id);
+            const span = exteriorWallFloorSpan(
+              geometry.rooms,
+              wall.id,
+              geometry.walls,
+            );
+            if (span) {
+              setTyping(true);
+              setSheet({
+                kind: "adjoin",
+                wallId: wall.id,
+                defaultWidthIn: span.length,
+              });
+            }
+          }
+        }
+        break;
+      case "delete-room": {
+        const roomId =
+          hit.kind === "room" || hit.kind === "label" || hit.kind === "vertex"
+            ? hit.roomId
+            : selectedRoomId;
+        if (roomId) {
+          commitGeometry(deleteRoom(geometry, roomId));
+          clearSelection();
+        }
+        break;
+      }
+      case "add-door":
+        if (hit.kind === "wall") {
+          commitGeometry(addDoorOnWall(geometry, hit.wallId));
+        }
+        break;
+      case "add-window":
+        if (hit.kind === "wall") {
+          commitGeometry(addWindowOnWall(geometry, hit.wallId));
+        }
+        break;
+      case "add-opening":
+        if (hit.kind === "wall") {
+          commitGeometry(addOpeningOnWall(geometry, hit.wallId));
+        }
+        break;
+      case "opening-width":
+        if (hit.kind === "opening") {
+          setSelectedOpeningId(hit.openingId);
+          // focus existing width field via selection — panel shows width
+        }
+        break;
+      case "flip-swing":
+        if (hit.kind === "opening") {
+          commitGeometry(flipDoorSwing(geometry, hit.openingId));
+        }
+        break;
+      case "flip-hinge":
+        if (hit.kind === "opening") {
+          commitGeometry(flipDoorHinge(geometry, hit.openingId));
+        }
+        break;
+      case "delete-opening":
+        if (hit.kind === "opening") {
+          commitGeometry(deleteOpening(geometry, hit.openingId));
+          setSelectedOpeningId(null);
+        }
+        break;
+      case "stairs-rotate":
+        if (hit.kind === "stairs") {
+          commitGeometry(rotateStairs(geometry, hit.stairsId));
+        }
+        break;
+      case "stairs-flip":
+        if (hit.kind === "stairs") {
+          commitGeometry(toggleStairsDirection(geometry, hit.stairsId));
+        }
+        break;
+      case "stairs-resize":
+        if (hit.kind === "stairs") {
+          setSelectedStairsId(hit.stairsId);
+        }
+        break;
+      case "delete-stairs":
+        if (hit.kind === "stairs") {
+          commitGeometry(deleteStairs(geometry, hit.stairsId));
+          setSelectedStairsId(null);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  function actionBarItems(): ActionBarItem[] {
+    if (selectedStairsId) {
+      return [
+        { id: "stairs-rotate", label: "Rotate" },
+        { id: "stairs-flip", label: "Flip" },
+        { id: "stairs-resize", label: "Resize" },
+        { id: "delete-stairs", label: "Delete", danger: true },
+      ];
+    }
+    if (selectedOpeningId) {
+      const items: ActionBarItem[] = [
+        { id: "opening-width", label: "Width" },
+      ];
+      if (selectedOpening?.kind === "door") {
+        items.push(
+          { id: "flip-swing", label: "Flip swing" },
+          { id: "flip-hinge", label: "Flip hinge" },
+        );
+      }
+      items.push({ id: "delete-opening", label: "Delete", danger: true });
+      return items;
+    }
+    if (selectedWallId) {
+      const items: ActionBarItem[] = [
+        { id: "add-door", label: "Door" },
+        { id: "add-window", label: "Window" },
+        { id: "add-opening", label: "Opening" },
+      ];
+      if (wallCanAdjoin) {
+        items.push({ id: "add-adjoining", label: "Add room here" });
+      }
+      return items;
+    }
+    if (selectedRoomId) {
+      return [
+        { id: "move-lock", label: "Move", active: moveLocked },
+        {
+          id: "reshape",
+          label: reshape ? "Done" : "Reshape",
+          active: reshape,
+        },
+        { id: "rename", label: "Rename" },
+        { id: "change-type", label: "Type" },
+        { id: "edit-dims", label: "Dimensions" },
+        { id: "delete-room", label: "Delete", danger: true },
+      ];
+    }
+    return [];
+  }
+
+  function runActionBar(id: string) {
+    if (id === "move-lock") {
+      setMoveLocked((v) => !v);
+      setReshape(false);
+      setLabelSelected(false);
+      return;
+    }
+    if (id === "reshape") {
+      setReshape((v) => !v);
+      setMoveLocked(false);
+      setLabelSelected(false);
+      return;
+    }
+    if (id === "rename" || id === "edit-dims") {
+      openEditSheet();
+      return;
+    }
+    if (id === "change-type") {
+      setTypePickerOpen(true);
+      return;
+    }
+    if (id === "delete-room" && selectedRoomId) {
+      commitGeometry(deleteRoom(geometry, selectedRoomId));
+      clearSelection();
+      return;
+    }
+    if (id === "add-door" && selectedWallId) {
+      commitGeometry(addDoorOnWall(geometry, selectedWallId));
+      return;
+    }
+    if (id === "add-window" && selectedWallId) {
+      commitGeometry(addWindowOnWall(geometry, selectedWallId));
+      return;
+    }
+    if (id === "add-opening" && selectedWallId) {
+      commitGeometry(addOpeningOnWall(geometry, selectedWallId));
+      return;
+    }
+    if (id === "add-adjoining") {
+      openAdjoinSheet();
+      return;
+    }
+    if (id === "opening-width") {
+      // Width field is in the opening panel below
+      return;
+    }
+    if (id === "flip-swing" && selectedOpeningId) {
+      commitGeometry(flipDoorSwing(geometry, selectedOpeningId));
+      return;
+    }
+    if (id === "flip-hinge" && selectedOpeningId) {
+      commitGeometry(flipDoorHinge(geometry, selectedOpeningId));
+      return;
+    }
+    if (id === "delete-opening" && selectedOpeningId) {
+      commitGeometry(deleteOpening(geometry, selectedOpeningId));
+      setSelectedOpeningId(null);
+      return;
+    }
+    if (id === "stairs-rotate" && selectedStairsId) {
+      commitGeometry(rotateStairs(geometry, selectedStairsId));
+      return;
+    }
+    if (id === "stairs-flip" && selectedStairsId) {
+      commitGeometry(toggleStairsDirection(geometry, selectedStairsId));
+      return;
+    }
+    if (id === "delete-stairs" && selectedStairsId) {
+      commitGeometry(deleteStairs(geometry, selectedStairsId));
+      setSelectedStairsId(null);
+    }
+  }
+
   const sheetKey =
     sheet?.kind === "add"
       ? "add"
@@ -869,46 +1289,58 @@ export function EditorClient({
             selectedOpeningId={selectedOpeningId}
             selectedStairsId={selectedStairsId}
             selectedVertexIndex={selectedVertexIndex}
+            labelSelected={labelSelected}
+            reshape={reshape}
+            moveLocked={moveLocked}
             onSelectRoom={(id) => {
               setSelectedRoomId(id);
-              if (id) {
-                setSelectedWallId(null);
-                setSelectedOpeningId(null);
-                setSelectedStairsId(null);
-                setSelectedVertexIndex(null);
-              } else {
+              setSelectedWallId(null);
+              setSelectedOpeningId(null);
+              setSelectedStairsId(null);
+              setSelectedVertexIndex(null);
+              setLabelSelected(false);
+              if (!id) {
                 setTypePickerOpen(false);
-                setSelectedVertexIndex(null);
+                setReshape(false);
+                setMoveLocked(false);
+              } else if (id !== selectedRoomId) {
+                setReshape(false);
+                setMoveLocked(false);
               }
               if (!id && sheet?.kind === "edit") setSheet(null);
             }}
             onSelectWall={(id) => {
               setSelectedWallId(id);
               if (id) {
-                setSelectedRoomId(null);
+                const wall = geometry.walls.find((w) => w.id === id);
+                if (wall?.roomIds[0]) setSelectedRoomId(wall.roomIds[0]);
                 setSelectedOpeningId(null);
                 setSelectedStairsId(null);
                 setSelectedVertexIndex(null);
+                setLabelSelected(false);
                 setTypePickerOpen(false);
               }
             }}
             onSelectOpening={(id) => {
               setSelectedOpeningId(id);
               if (id) {
-                setSelectedRoomId(null);
+                const op = listOpenings(geometry).find((o) => o.id === id);
+                if (op) setSelectedRoomId(op.roomId);
                 setSelectedWallId(null);
                 setSelectedStairsId(null);
                 setSelectedVertexIndex(null);
+                setLabelSelected(false);
                 setTypePickerOpen(false);
               }
             }}
             onSelectStairs={(id) => {
               setSelectedStairsId(id);
               if (id) {
-                setSelectedRoomId(null);
                 setSelectedWallId(null);
                 setSelectedOpeningId(null);
                 setSelectedVertexIndex(null);
+                setLabelSelected(false);
+                setReshape(false);
                 setTypePickerOpen(false);
               }
             }}
@@ -918,8 +1350,22 @@ export function EditorClient({
               setSelectedWallId(null);
               setSelectedOpeningId(null);
               setSelectedStairsId(null);
+              setLabelSelected(false);
               setTypePickerOpen(false);
             }}
+            onSelectLabel={(roomId) => {
+              if (!roomId) {
+                setLabelSelected(false);
+                return;
+              }
+              setSelectedRoomId(roomId);
+              setLabelSelected(true);
+              setSelectedWallId(null);
+              setSelectedOpeningId(null);
+              setSelectedStairsId(null);
+              setSelectedVertexIndex(null);
+            }}
+            onClearSelection={clearSelection}
             onMoveRoom={handleMoveRoom}
             onMoveOpening={handleMoveOpening}
             onMoveStairs={handleMoveStairs}
@@ -929,6 +1375,9 @@ export function EditorClient({
             onDocumentGestureStart={handleDocumentGestureStart}
             onDocumentGestureEnd={handleDocumentGestureEnd}
             onInteractionChange={handleInteractionChange}
+            onContextMenuRequest={(req) => setContextMenu(req)}
+            onZoomToFitRef={zoomToFitRef}
+            onSelectionAnchorRef={selectionAnchorRef}
           />
         </div>
 
@@ -1396,6 +1845,23 @@ export function EditorClient({
         ) : null}
         </div>
       </div>
+
+      <EditorActionBar
+        items={actionBarItems()}
+        anchorClient={actionAnchor}
+        onAction={runActionBar}
+      />
+
+      {contextMenu ? (
+        <EditorContextMenu
+          open
+          clientX={contextMenu.clientX}
+          clientY={contextMenu.clientY}
+          items={contextMenuItems(contextMenu.hit)}
+          onSelect={(id) => runContextAction(id, contextMenu.hit)}
+          onClose={() => setContextMenu(null)}
+        />
+      ) : null}
 
       {sheet ? (
         <RoomSheet

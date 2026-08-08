@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "check:plan-geometry": "node --experimental-strip-types scripts/check-plan-geometry.ts",
-    "check:measure": "node --experimental-strip-types scripts/check-measure.ts"
+    "check:measure": "node --experimental-strip-types scripts/check-measure.ts",
+    "check:hit-test": "node --experimental-strip-types scripts/check-hit-test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
