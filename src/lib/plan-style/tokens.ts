@@ -14,9 +14,9 @@ export type RoomCategory = "living" | "wet" | "service";
 /**
  * Literal font stack for plan SVG text.
  * Must NOT use CSS custom properties — exports serialize these attributes as-is.
+ * Face is self-hosted IBM Plex Sans SemiBold (see plan-font.ts).
  */
-export const PLAN_FONT_FAMILY =
-  "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+export { PLAN_FONT_FAMILY } from "./plan-font.ts";
 
 export const planTokens = {
   /** Sheet / export ground — cool white; ties to brand, never themed. */

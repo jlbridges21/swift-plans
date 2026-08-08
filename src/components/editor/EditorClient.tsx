@@ -13,6 +13,7 @@ import {
   EditorActionBar,
   type ActionBarItem,
 } from "@/components/editor/EditorActionBar";
+import { ExportSheet } from "@/components/editor/ExportSheet";
 import {
   EditorContextMenu,
   type ContextMenuItem,
@@ -229,6 +230,7 @@ export function EditorClient({
   const [floorActionBusy, setFloorActionBusy] = useState(false);
   const [style, setStyle] = useState(() => initialStyle);
   const [styleSheetOpen, setStyleSheetOpen] = useState(false);
+  const [exportSheetOpen, setExportSheetOpen] = useState(false);
   const [reshape, setReshape] = useState(false);
   const [labelSelected, setLabelSelected] = useState(false);
   const [moveLocked, setMoveLocked] = useState(false);
@@ -1531,6 +1533,13 @@ export function EditorClient({
               >
                 Style
               </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setExportSheetOpen(true)}
+              >
+                Export
+              </Button>
               {selectedRoom ? (
                 <Button type="button" variant="secondary" onClick={openEditSheet}>
                   Edit {selectedRoom.name}
@@ -2242,6 +2251,28 @@ export function EditorClient({
             </div>
           </div>
         </div>
+      ) : null}
+
+      {exportSheetOpen ? (
+        <ExportSheet
+          projectName={projectName}
+          floorName={activeFloor?.name ?? "Floor"}
+          floors={floors.map((f) => ({ id: f.id, name: f.name }))}
+          geometry={geometry}
+          allGeometries={Object.fromEntries(
+            floors.map((f) => {
+              if (f.id === activeFloorId) return [f.id, geometry];
+              const hist = historiesRef.current.get(f.id);
+              const geo =
+                hist?.present ??
+                initialGeometries[f.id] ??
+                geometry;
+              return [f.id, geo];
+            }),
+          )}
+          style={style}
+          onClose={() => setExportSheetOpen(false)}
+        />
       ) : null}
     </div>
   );

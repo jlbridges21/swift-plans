@@ -13,6 +13,14 @@ import {
   PLAN_FONT_FAMILY,
   planTokens,
 } from "@/lib/plan-style/tokens";
+import {
+  planFontFaceCss,
+  planFontFaceCssForScreen,
+} from "@/lib/plan-style/plan-font";
+import {
+  brandingHasContent,
+  type PlanBranding,
+} from "@/lib/plan/branding";
 import { livingAreaSqFt } from "@/lib/plan/area";
 import {
   estimateLabelTextWidth,
@@ -62,6 +70,15 @@ export function planViewBox(
 type PlanDocumentProps = {
   geometry: FloorGeometry;
   style?: PlanStyleSettings;
+  /** When set and non-empty, renders a restrained branding footer. */
+  branding?: PlanBranding | null;
+  /**
+   * When true, embed the plan font as a data-URI @font-face (standalone SVG).
+   * When false (editor), use the public /fonts path.
+   */
+  embedFont?: boolean;
+  /** Optional precomputed font-face CSS (avoids reading filesystem). */
+  fontFaceCss?: string;
 };
 
 type LabelLayout = {
@@ -79,7 +96,7 @@ function labelLayoutForRoom(
     box.maxX - box.minX - planTokens.labelFit.paddingIn * 2;
   const name = room.name.toUpperCase();
   const dims = formatRoomDimensions(room.polygon);
-  const area = `${Math.round(sqInToSqFt(polygonAreaSqIn(room.polygon)))} SQ FT`;
+  const area = `≈ ${Math.round(sqInToSqFt(polygonAreaSqIn(room.polygon)))} SQ FT`;
 
   let nameSize = LABEL_SIZE_PX[style.labelSize];
   const nameFits = (size: number) =>
@@ -108,6 +125,9 @@ function labelLayoutForRoom(
 export function PlanDocument({
   geometry,
   style = DEFAULT_PLAN_STYLE,
+  branding = null,
+  embedFont = false,
+  fontFaceCss,
 }: PlanDocumentProps) {
   const { bounds, title } = geometry.meta;
   const margin = planTokens.sheetMargin;
@@ -115,6 +135,7 @@ export function PlanDocument({
 
   const livingSqFt = livingAreaSqFt(geometry);
   const totalLivingSqFt = livingSqFt ?? 0;
+  const showBranding = brandingHasContent(branding);
 
   const texturedRooms = style.showFloorTexture
     ? geometry.rooms.filter(
@@ -123,9 +144,14 @@ export function PlanDocument({
       )
     : [];
 
+  const faceCss =
+    fontFaceCss ??
+    (embedFont ? planFontFaceCss() : planFontFaceCssForScreen());
+
   return (
     <g aria-label={title || "Floor plan"}>
       <defs>
+        {faceCss ? <style type="text/css">{faceCss}</style> : null}
         {texturedRooms.map((room) => {
           const texture = floorTextureForRoomType(
             normalizeRoomType(room.type),
@@ -418,7 +444,7 @@ export function PlanDocument({
                 fontSize={planTokens.typography.areaSize}
                 fontWeight={400}
               >
-                {area} SQ FT
+                {`≈ ${area} SQ FT`}
               </tspan>
             ) : null}
           </text>
@@ -447,10 +473,79 @@ export function PlanDocument({
               fontWeight={600}
               letterSpacing="0.08em"
             >
-              TOTAL LIVING AREA{"  "}
+              TOTAL LIVING AREA{"  "}≈{" "}
               {Math.round(totalLivingSqFt).toLocaleString()} SQ FT
+              {"  "}(APPROX)
             </text>
           ) : null}
+        </g>
+      ) : null}
+
+      {showBranding && branding && !empty ? (
+        <g
+          data-plan-branding="true"
+          transform={`translate(${bounds.maxX - margin * 0.12}, ${bounds.maxY + margin * 0.42})`}
+        >
+          {(() => {
+            // Standalone SVG must never reference external logo URLs.
+            const logoHref = embedFont
+              ? branding.logoDataUri
+              : branding.logoDataUri || branding.logoUrl;
+            const hasLogo = Boolean(logoHref);
+            const textY0 = hasLogo ? 14 : 0;
+            return (
+              <>
+                {logoHref ? (
+                  <image
+                    href={logoHref}
+                    x={-120}
+                    y={0}
+                    width={36}
+                    height={36}
+                    preserveAspectRatio="xMidYMid meet"
+                  />
+                ) : null}
+                <text
+                  textAnchor="end"
+                  fontFamily={PLAN_FONT_FAMILY}
+                  fill={planTokens.inkMuted}
+                  fontSize={11}
+                  fontWeight={600}
+                  letterSpacing="0.06em"
+                  x={0}
+                  y={textY0}
+                >
+                  {(branding.companyName || "").toUpperCase()}
+                </text>
+                {branding.website ? (
+                  <text
+                    textAnchor="end"
+                    fontFamily={PLAN_FONT_FAMILY}
+                    fill={planTokens.inkSubtle}
+                    fontSize={9}
+                    fontWeight={400}
+                    x={0}
+                    y={textY0 + 14}
+                  >
+                    {branding.website}
+                  </text>
+                ) : null}
+                {branding.footerText ? (
+                  <text
+                    textAnchor="end"
+                    fontFamily={PLAN_FONT_FAMILY}
+                    fill={planTokens.inkSubtle}
+                    fontSize={9}
+                    fontWeight={400}
+                    x={0}
+                    y={textY0 + (branding.website ? 28 : 14)}
+                  >
+                    {branding.footerText}
+                  </text>
+                ) : null}
+              </>
+            );
+          })()}
         </g>
       ) : null}
     </g>
@@ -460,12 +555,23 @@ export function PlanDocument({
 type PlanDrawingProps = {
   geometry: FloorGeometry;
   style?: PlanStyleSettings;
+  branding?: PlanBranding | null;
+  embedFont?: boolean;
+  fontFaceCss?: string;
+  /** Explicit pixel size for standalone export files. */
+  exportWidthPx?: number;
+  exportHeightPx?: number;
 };
 
 /** Standalone document renderer (debug / export). No editing chrome. */
 export function PlanDrawing({
   geometry,
   style = DEFAULT_PLAN_STYLE,
+  branding = null,
+  embedFont = false,
+  fontFaceCss,
+  exportWidthPx,
+  exportHeightPx,
 }: PlanDrawingProps) {
   const { minX: viewMinX, minY: viewMinY, width: viewW, height: viewH } =
     planViewBox(geometry, style);
@@ -473,12 +579,15 @@ export function PlanDrawing({
 
   return (
     <svg
+      xmlns="http://www.w3.org/2000/svg"
       viewBox={`${viewMinX} ${viewMinY} ${viewW} ${viewH}`}
+      width={exportWidthPx ?? undefined}
+      height={exportHeightPx ?? undefined}
       role="img"
       aria-label={title || "Floor plan"}
       style={{
-        width: "100%",
-        height: "auto",
+        width: exportWidthPx ? undefined : "100%",
+        height: exportHeightPx ? undefined : "auto",
         display: "block",
         background: planTokens.paper,
       }}
@@ -490,7 +599,13 @@ export function PlanDrawing({
         height={viewH}
         fill={planTokens.paper}
       />
-      <PlanDocument geometry={geometry} style={style} />
+      <PlanDocument
+        geometry={geometry}
+        style={style}
+        branding={branding}
+        embedFont={embedFont}
+        fontFaceCss={fontFaceCss}
+      />
     </svg>
   );
 }
