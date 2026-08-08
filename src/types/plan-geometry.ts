@@ -5,59 +5,37 @@
  * Units: all coordinates and lengths are inches.
  *
  * schemaVersion 2: rooms authoritative; walls derived (derive-walls.ts).
- * schemaVersion 3: openings anchored to room edges (not derived wall ids),
- * so they survive adjoining / neighbor deletion. Walls still derived; opening
- * gaps are cut into derived spans at finalize time.
+ * schemaVersion 3: openings anchored to room edges (not derived wall ids).
+ * schemaVersion 4: PlanRoom.nameCustom — whether the user authored the name
+ * (auto names including "Room N" stay false so setRoomType can rename).
  *
- * Room types live in src/lib/plan/room-types.ts (single source of truth).
- * Expanding the type union does not bump schemaVersion — stored shape is
- * unchanged; legacy values like `entry` normalize to `foyer` on load.
+ * Room types: src/lib/plan/room-types.ts (single source of truth).
  */
 
 export type PlanPoint = { x: number; y: number };
 
 export type WallKind = "exterior" | "interior";
 
-/**
- * Which end of an opening span (along the room edge from start→end vertex)
- * holds the door hinge.
- */
 export type HingeEnd = "start" | "end";
 
-/**
- * Swing into the room on the left (+1) or right (-1) of the wall direction
- * when walking from opening-start toward opening-end.
- * Default +1 = into the anchor room for a CCW polygon.
- */
 export type SwingSide = 1 | -1;
 
 export type {
   PlanRoomCategory,
   PlanRoomType,
-} from "../lib/plan/room-types";
+} from "../lib/plan/room-types.ts";
 
 import type {
   PlanRoomCategory,
   PlanRoomType,
-} from "../lib/plan/room-types";
+} from "../lib/plan/room-types.ts";
 
 export type PlanWall = {
-  /**
-   * Derived id (see derive-walls.ts). Opening-split segments append `~{i}`
-   * to the parent span id. Openings themselves do NOT store wall ids.
-   */
   id: string;
-  /** Centerline polyline in inches. */
   centerline: PlanPoint[];
-  /** Filled wall thickness in inches. */
   thickness: number;
   kind: WallKind;
-  /** True for a closed exterior shell loop. Derived walls are open segments. */
   closed: boolean;
-  /**
-   * Rooms this wall borders.
-   * Exterior: one room id. Interior: two room ids (shared wall).
-   */
   roomIds: string[];
 };
 
@@ -66,22 +44,20 @@ export type PlanRoom = {
   name: string;
   type: PlanRoomType;
   category: PlanRoomCategory;
-  /** Interior floor polygon (inside face of walls). */
   polygon: PlanPoint[];
   labelAnchor: PlanPoint;
+  /**
+   * True only when the user typed a custom name.
+   * False for auto names (type display names / "Room N").
+   * When false, setRoomType replaces the name.
+   */
+  nameCustom: boolean;
 };
 
-/**
- * Anchor for doors / windows / openings on a room polygon edge.
- * Survives wall-id churn when neighbors are added or deleted.
- */
 export type RoomEdgeAnchor = {
   roomId: string;
-  /** Polygon edge index: vertex i → vertex i+1. */
   edgeIndex: number;
-  /** Inches along the edge from the start vertex to the opening's start. */
   offsetIn: number;
-  /** Opening width along the edge, inches. */
   widthIn: number;
 };
 
@@ -95,7 +71,6 @@ export type PlanWindow = RoomEdgeAnchor & {
   id: string;
 };
 
-/** Pass-through opening (gap with no leaf or panes). */
 export type PlanOpening = RoomEdgeAnchor & {
   id: string;
 };
@@ -104,7 +79,6 @@ export type StairRotationDeg = 0 | 90 | 180 | 270;
 
 export type PlanStairs = {
   id: string;
-  /** Anchor corner of the un-rotated axis-aligned footprint. */
   origin: PlanPoint;
   widthIn: number;
   depthIn: number;
@@ -120,7 +94,7 @@ export type PlanLabel = {
 };
 
 export type FloorGeometry = {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   meta: {
     title: string;
     bounds: {
@@ -148,7 +122,7 @@ export const EMPTY_GEOMETRY_BOUNDS = {
 
 export function createEmptyFloorGeometry(title = ""): FloorGeometry {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     meta: {
       title,
       bounds: { ...EMPTY_GEOMETRY_BOUNDS },

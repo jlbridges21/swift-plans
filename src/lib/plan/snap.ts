@@ -6,8 +6,8 @@
  * stays consistent across zoom levels.
  */
 
-import type { FloorGeometry, PlanPoint, PlanRoom } from "../../types/plan-geometry";
-import { stairsPolygon } from "./stairs";
+import type { FloorGeometry, PlanPoint, PlanRoom } from "../../types/plan-geometry.ts";
+import { stairsPolygon } from "./stairs.ts";
 
 /**
  * Screen-space snap distance in CSS pixels.

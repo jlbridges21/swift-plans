@@ -3,7 +3,7 @@
  * Pure functions — no React. Pan/zoom never enter this stack.
  */
 
-import type { FloorGeometry } from "../../types/plan-geometry";
+import type { FloorGeometry } from "../../types/plan-geometry.ts";
 
 /** Max discrete actions retained (oldest dropped). */
 export const MAX_GEOMETRY_HISTORY = 50;

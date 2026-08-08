@@ -21,7 +21,7 @@ export async function saveFloorGeometry(
   if (!floorId) {
     return { ok: false, error: "Missing floor." };
   }
-  if (!geometry || geometry.schemaVersion < 1 || geometry.schemaVersion > 3) {
+  if (!geometry || geometry.schemaVersion < 1 || geometry.schemaVersion > 4) {
     return { ok: false, error: "Invalid floor plan data." };
   }
 

@@ -32,10 +32,10 @@ const exteriorCenterline: PlanPoint[] = [
 ];
 
 /**
- * Typed floor geometry document (schemaVersion 3 — room-edge openings).
+ * Typed floor geometry document (schemaVersion 4 — room-edge openings).
  */
 export const sampleFloorGeometry: FloorGeometry = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   meta: {
     title: "Sample Residence — ~1,450 sq ft",
     bounds: { minX: 0, minY: 0, maxX: 744 * S, maxY: 384 * S },
@@ -178,6 +178,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "living",
       polygon: [pt(12, 12), pt(180, 12), pt(180, 156), pt(12, 156)],
       labelAnchor: pt(96, 78),
+      nameCustom: false,
     },
     {
       id: "wic",
@@ -193,6 +194,7 @@ export const sampleFloorGeometry: FloorGeometry = {
         pt(180, 156),
       ],
       labelAnchor: pt(216, 64),
+      nameCustom: false,
     },
     {
       id: "ensuite",
@@ -201,6 +203,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "wet",
       polygon: [pt(228, 96), pt(312, 96), pt(312, 156), pt(228, 156)],
       labelAnchor: pt(270, 126),
+      nameCustom: false,
     },
     {
       id: "bath2",
@@ -209,6 +212,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "wet",
       polygon: [pt(312, 12), pt(384, 12), pt(384, 84), pt(312, 84)],
       labelAnchor: pt(348, 48),
+      nameCustom: false,
     },
     {
       id: "bed3",
@@ -217,6 +221,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "living",
       polygon: [pt(384, 12), pt(492, 12), pt(492, 144), pt(384, 144)],
       labelAnchor: pt(438, 72),
+      nameCustom: false,
     },
     {
       id: "bed2",
@@ -225,6 +230,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "living",
       polygon: [pt(384, 144), pt(492, 144), pt(492, 276), pt(384, 276)],
       labelAnchor: pt(438, 210),
+      nameCustom: false,
     },
     {
       id: "living",
@@ -240,6 +246,7 @@ export const sampleFloorGeometry: FloorGeometry = {
         pt(12, 360),
       ],
       labelAnchor: pt(120, 230),
+      nameCustom: false,
     },
     {
       id: "dining",
@@ -248,6 +255,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "living",
       polygon: [pt(192, 276), pt(300, 276), pt(300, 360), pt(192, 360)],
       labelAnchor: pt(246, 318),
+      nameCustom: false,
     },
     {
       id: "kitchen",
@@ -256,6 +264,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "wet",
       polygon: [pt(300, 168), pt(372, 168), pt(372, 276), pt(300, 276)],
       labelAnchor: pt(336, 222),
+      nameCustom: false,
     },
     {
       id: "laundry",
@@ -264,6 +273,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "wet",
       polygon: [pt(372, 168), pt(432, 168), pt(432, 228), pt(372, 228)],
       labelAnchor: pt(402, 198),
+      nameCustom: false,
     },
     {
       id: "hall",
@@ -272,6 +282,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "service",
       polygon: [pt(312, 84), pt(384, 84), pt(384, 156), pt(312, 156)],
       labelAnchor: pt(348, 120),
+      nameCustom: false,
     },
     {
       id: "garage",
@@ -280,6 +291,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       category: "service",
       polygon: [pt(510, 156), pt(732, 156), pt(732, 372), pt(510, 372)],
       labelAnchor: pt(621, 264),
+      nameCustom: false,
     },
   ],
   doors: [

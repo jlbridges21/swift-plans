@@ -31,7 +31,7 @@ import type {
   PlanPoint,
   PlanRoom,
   PlanWall,
-} from "../../types/plan-geometry";
+} from "../../types/plan-geometry.ts";
 
 /** Must match planTokens.wallExterior / wallInterior (no runtime import — Node checks). */
 export const DERIVED_WALL_EXTERIOR = 6;

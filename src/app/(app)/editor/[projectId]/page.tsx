@@ -54,24 +54,27 @@ export default async function EditorPage({ params }: EditorPageProps) {
     notFound();
   }
 
-  const activeFloor = floors[0];
-  const { data: geoRow } = await supabase
+  const floorIds = floors.map((f) => f.id);
+  const { data: geoRows } = await supabase
     .from("floor_geometry")
-    .select("geometry")
-    .eq("floor_id", activeFloor.id)
-    .maybeSingle();
+    .select("floor_id, geometry")
+    .in("floor_id", floorIds);
 
-  const geometry: FloorGeometry =
-    (geoRow?.geometry as FloorGeometry | undefined) ??
-    createEmptyFloorGeometry(project.name);
+  const initialGeometries: Record<string, FloorGeometry> = {};
+  for (const floor of floors) {
+    const row = geoRows?.find((g) => g.floor_id === floor.id);
+    initialGeometries[floor.id] =
+      (row?.geometry as FloorGeometry | undefined) ??
+      createEmptyFloorGeometry(project.name);
+  }
 
   return (
     <EditorClient
       projectId={project.id}
       projectName={project.name}
-      floorId={activeFloor.id}
-      floors={floors}
-      initialGeometry={geometry}
+      initialFloorId={floors[0]!.id}
+      initialFloors={floors}
+      initialGeometries={initialGeometries}
     />
   );
 }

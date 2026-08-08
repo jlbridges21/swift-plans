@@ -2,19 +2,15 @@
  * Room label position helpers (document inches).
  */
 
-import type { PlanPoint, PlanRoom } from "../../types/plan-geometry";
-import { planTokens } from "../plan-style/tokens";
+import {
+  pointInPolygon,
+  polygonCentroid,
+} from "../../components/plan/geometry.ts";
+import type { PlanPoint, PlanRoom } from "../../types/plan-geometry.ts";
+import { planTokens } from "../plan-style/tokens.ts";
 
 export function roomCentroid(room: PlanRoom): PlanPoint {
-  const poly = room.polygon;
-  if (poly.length === 0) return { x: 0, y: 0 };
-  let x = 0;
-  let y = 0;
-  for (const p of poly) {
-    x += p.x;
-    y += p.y;
-  }
-  return { x: x / poly.length, y: y / poly.length };
+  return polygonCentroid(room.polygon);
 }
 
 export function roomAabb(room: PlanRoom): {
@@ -36,6 +32,67 @@ export function roomAabb(room: PlanRoom): {
   return { minX, minY, maxX, maxY };
 }
 
+function distToEdges(point: PlanPoint, poly: PlanPoint[]): number {
+  let min = Infinity;
+  for (let i = 0; i < poly.length; i += 1) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    // Distance to axis-aligned segment
+    if (Math.abs(a.y - b.y) < 1e-6) {
+      const xLo = Math.min(a.x, b.x);
+      const xHi = Math.max(a.x, b.x);
+      const cx = Math.min(xHi, Math.max(xLo, point.x));
+      min = Math.min(min, Math.hypot(point.x - cx, point.y - a.y));
+    } else if (Math.abs(a.x - b.x) < 1e-6) {
+      const yLo = Math.min(a.y, b.y);
+      const yHi = Math.max(a.y, b.y);
+      const cy = Math.min(yHi, Math.max(yLo, point.y));
+      min = Math.min(min, Math.hypot(point.x - a.x, point.y - cy));
+    }
+  }
+  return min;
+}
+
+/**
+ * Point guaranteed inside the polygon for label placement.
+ * Prefer centroid when inside; otherwise scan a coarse grid and pick the
+ * interior sample furthest from any edge.
+ */
+export function interiorLabelPoint(poly: PlanPoint[]): PlanPoint {
+  if (poly.length === 0) return { x: 0, y: 0 };
+  const c = polygonCentroid(poly);
+  if (pointInPolygon(c, [poly])) return c;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of poly) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  const steps = 12;
+  let best: PlanPoint = c;
+  let bestScore = -1;
+  for (let iy = 0; iy <= steps; iy += 1) {
+    for (let ix = 0; ix <= steps; ix += 1) {
+      const p = {
+        x: minX + ((maxX - minX) * ix) / steps,
+        y: minY + ((maxY - minY) * iy) / steps,
+      };
+      if (!pointInPolygon(p, [poly])) continue;
+      const score = distToEdges(p, poly);
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+  }
+  return best;
+}
+
 /** Clamp a label anchor so it stays near the room. */
 export function clampLabelAnchor(
   room: PlanRoom,
@@ -50,7 +107,7 @@ export function clampLabelAnchor(
 }
 
 export function defaultLabelAnchor(room: PlanRoom): PlanPoint {
-  return roomCentroid(room);
+  return interiorLabelPoint(room.polygon);
 }
 
 /**
@@ -58,6 +115,5 @@ export function defaultLabelAnchor(room: PlanRoom): PlanPoint {
  * Tuned for PLAN_FONT_FAMILY at typical label sizes — not exact metrics.
  */
 export function estimateLabelTextWidth(text: string, fontSize: number): number {
-  // letter-spacing on names is ~0.1em; treat average advance as ~0.62em
   return text.length * fontSize * 0.62;
 }

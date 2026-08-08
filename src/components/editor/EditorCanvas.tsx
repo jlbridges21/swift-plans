@@ -20,6 +20,10 @@ import { listOpenings } from "@/lib/plan/openings";
 import { openingWorldSpan } from "@/lib/plan/openings";
 import { stairsPolygon } from "@/lib/plan/stairs";
 import type { FloorGeometry, PlanPoint } from "@/types/plan-geometry";
+import {
+  collectSnapTargets,
+  snapOrthoPoint,
+} from "@/lib/plan/polygon-edit";
 
 export type CameraViewBox = {
   x: number;
@@ -34,17 +38,24 @@ type EditorCanvasProps = {
   selectedWallId: string | null;
   selectedOpeningId: string | null;
   selectedStairsId: string | null;
+  selectedVertexIndex: number | null;
   onSelectRoom: (roomId: string | null) => void;
   onSelectWall: (wallId: string | null) => void;
   onSelectOpening: (openingId: string | null) => void;
   onSelectStairs: (stairsId: string | null) => void;
+  onSelectVertex: (roomId: string, vertexIndex: number) => void;
   onMoveRoom: (roomId: string, dx: number, dy: number) => void;
   onMoveOpening: (openingId: string, offsetIn: number) => void;
   onMoveStairs: (stairsId: string, dx: number, dy: number) => void;
   onMoveLabel: (roomId: string, at: PlanPoint) => void;
-  /** Document-mutating gesture started (not pan/zoom). */
+  onMoveVertex: (
+    roomId: string,
+    vertexIndex: number,
+    x: number,
+    y: number,
+  ) => void;
+  onInsertVertex: (roomId: string, edgeIndex: number, offsetIn: number) => void;
   onDocumentGestureStart: () => void;
-  /** Document-mutating gesture ended — commit one history entry. */
   onDocumentGestureEnd: () => void;
   onInteractionChange: (active: boolean) => void;
 };
@@ -132,6 +143,14 @@ type ActiveGesture =
       lastClientY: number;
     }
   | {
+      kind: "move-vertex";
+      pointerId: number;
+      roomId: string;
+      vertexIndex: number;
+      lastClientX: number;
+      lastClientY: number;
+    }
+  | {
       kind: "pinch";
       pointers: Map<number, { x: number; y: number }>;
       lastDist: number;
@@ -149,14 +168,18 @@ export function EditorCanvas({
   selectedWallId,
   selectedOpeningId,
   selectedStairsId,
+  selectedVertexIndex,
   onSelectRoom,
   onSelectWall,
   onSelectOpening,
   onSelectStairs,
+  onSelectVertex,
   onMoveRoom,
   onMoveOpening,
   onMoveStairs,
   onMoveLabel,
+  onMoveVertex,
+  onInsertVertex,
   onDocumentGestureStart,
   onDocumentGestureEnd,
   onInteractionChange,
@@ -300,7 +323,8 @@ export function EditorCanvas({
         existing.kind === "move-room" ||
         existing.kind === "move-opening" ||
         existing.kind === "move-stairs" ||
-        existing.kind === "move-label")
+        existing.kind === "move-label" ||
+        existing.kind === "move-vertex")
     ) {
       if (existing.kind !== "pan") {
         onDocumentGestureEnd();
@@ -323,6 +347,12 @@ export function EditorCanvas({
     }
 
     const target = e.target as Element;
+    const hitVertex = target.closest("[data-vertex-hit]");
+    const vertexRoomId = hitVertex?.getAttribute("data-vertex-hit");
+    const vertexIndexRaw = hitVertex?.getAttribute("data-vertex-index");
+    const hitEdgeInsert = target.closest("[data-edge-insert]");
+    const insertRoomId = hitEdgeInsert?.getAttribute("data-edge-insert");
+    const insertEdgeRaw = hitEdgeInsert?.getAttribute("data-edge-index");
     const hitLabel = target.closest("[data-label-hit]");
     const labelRoomId = hitLabel?.getAttribute("data-label-hit") ?? null;
     const hitOpening = target.closest("[data-opening-hit]");
@@ -333,6 +363,41 @@ export function EditorCanvas({
     const wallId = hitWall?.getAttribute("data-wall-hit") ?? null;
     const hitRoom = target.closest("[data-room-hit]");
     const roomId = hitRoom?.getAttribute("data-room-hit") ?? null;
+
+    if (vertexRoomId != null && vertexIndexRaw != null) {
+      const vertexIndex = Number(vertexIndexRaw);
+      onSelectVertex(vertexRoomId, vertexIndex);
+      gestureRef.current = {
+        kind: "move-vertex",
+        pointerId: e.pointerId,
+        roomId: vertexRoomId,
+        vertexIndex,
+        lastClientX: e.clientX,
+        lastClientY: e.clientY,
+      };
+      onDocumentGestureStart();
+      onInteractionChange(true);
+      (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
+
+    if (insertRoomId != null && insertEdgeRaw != null) {
+      const edgeIndex = Number(insertEdgeRaw);
+      const room = geometryRef.current.rooms.find((r) => r.id === insertRoomId);
+      if (room) {
+        const a = room.polygon[edgeIndex]!;
+        const b = room.polygon[(edgeIndex + 1) % room.polygon.length]!;
+        const world = clientToWorld(e.clientX, e.clientY);
+        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        const offset =
+          ((world.x - a.x) * (b.x - a.x) + (world.y - a.y) * (b.y - a.y)) / len;
+        onSelectRoom(insertRoomId);
+        onInsertVertex(insertRoomId, edgeIndex, offset);
+      }
+      e.preventDefault();
+      return;
+    }
 
     if (labelRoomId) {
       onSelectRoom(labelRoomId);
@@ -549,6 +614,24 @@ export function EditorCanvas({
       g.lastClientY = e.clientY;
       const world = clientToWorld(e.clientX, e.clientY);
       onMoveLabel(g.roomId, world);
+      return;
+    }
+
+    if (g.kind === "move-vertex" && e.pointerId === g.pointerId) {
+      g.lastClientX = e.clientX;
+      g.lastClientY = e.clientY;
+      const world = clientToWorld(e.clientX, e.clientY);
+      const svg = svgRef.current;
+      const rect = svg?.getBoundingClientRect();
+      const v = viewRef.current;
+      const pxPerIn = rect && rect.width > 0 ? rect.width / v.w : 1;
+      const thresholdIn = ROOM_SNAP_THRESHOLD_PX / pxPerIn;
+      const snapped = snapOrthoPoint(
+        world,
+        collectSnapTargets(geometryRef.current, g.roomId),
+        thresholdIn,
+      );
+      onMoveVertex(g.roomId, g.vertexIndex, snapped.x, snapped.y);
     }
   }
 
@@ -570,7 +653,8 @@ export function EditorCanvas({
       g.kind === "move-room" ||
       g.kind === "move-opening" ||
       g.kind === "move-stairs" ||
-      g.kind === "move-label";
+      g.kind === "move-label" ||
+      g.kind === "move-vertex";
     gestureRef.current = null;
     setSnapGuides([]);
     if (wasDocument) onDocumentGestureEnd();
@@ -590,13 +674,13 @@ export function EditorCanvas({
   const guidePad = Math.max(view.w, view.h);
 
   return (
-    <div className="relative flex min-h-[min(62dvh,560px)] w-full flex-1 flex-col">
+    <div className="relative flex h-[min(38dvh,340px)] w-full shrink-0 flex-col">
       <svg
         ref={svgRef}
         viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
         role="application"
         aria-label="Floor plan canvas"
-        className="h-full min-h-[min(62dvh,560px)] w-full touch-none select-none"
+        className="h-full w-full touch-none select-none"
         style={{ background: planTokens.paper, display: "block" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -678,6 +762,57 @@ export function EditorCanvas({
               style={{ cursor: "grab", touchAction: "none" }}
             />
           ))}
+
+          {selectedRoom
+            ? selectedRoom.polygon.map((p, i) => {
+                const next =
+                  selectedRoom.polygon[(i + 1) % selectedRoom.polygon.length]!;
+                const mx = (p.x + next.x) / 2;
+                const my = (p.y + next.y) / 2;
+                return (
+                  <g key={`vert-tools-${selectedRoom.id}-${i}`}>
+                    <circle
+                      data-edge-insert={selectedRoom.id}
+                      data-edge-index={i}
+                      cx={mx}
+                      cy={my}
+                      r={labelHitR * 0.85}
+                      fill="transparent"
+                      style={{ cursor: "copy", touchAction: "none" }}
+                    />
+                    <circle
+                      cx={mx}
+                      cy={my}
+                      r={3}
+                      fill="#2563eb"
+                      opacity={0.7}
+                      pointerEvents="none"
+                    />
+                    <circle
+                      data-vertex-hit={selectedRoom.id}
+                      data-vertex-index={i}
+                      cx={p.x}
+                      cy={p.y}
+                      r={labelHitR}
+                      fill="transparent"
+                      style={{ cursor: "grab", touchAction: "none" }}
+                    />
+                    <rect
+                      x={p.x - 4}
+                      y={p.y - 4}
+                      width={8}
+                      height={8}
+                      fill={
+                        selectedVertexIndex === i ? "#2563eb" : planTokens.ink
+                      }
+                      stroke={planTokens.paper}
+                      strokeWidth={1}
+                      pointerEvents="none"
+                    />
+                  </g>
+                );
+              })
+            : null}
 
           {selectedRoom ? (
             <path

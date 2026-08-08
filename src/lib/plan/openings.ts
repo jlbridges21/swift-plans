@@ -11,7 +11,7 @@ import type {
   PlanRoom,
   PlanWindow,
   RoomEdgeAnchor,
-} from "../../types/plan-geometry";
+} from "../../types/plan-geometry.ts";
 
 /** Minimum opening width kept after clamp; below this the opening is removed. */
 export const MIN_OPENING_WIDTH_IN = 12;
@@ -105,6 +105,20 @@ function clampOne(
   if (offset + width > edgeLen) offset = edgeLen - width;
   if (offset < 0) return null;
   return { ...anchor, offsetIn: offset, widthIn: width };
+}
+
+/** Clamp a single opening to an edge length; null if it cannot fit. */
+export function clampOpeningToEdge(
+  offsetIn: number,
+  widthIn: number,
+  edgeLen: number,
+): { offsetIn: number; widthIn: number } | null {
+  const next = clampOne(
+    { roomId: "", edgeIndex: 0, offsetIn, widthIn },
+    edgeLen,
+  );
+  if (!next) return null;
+  return { offsetIn: next.offsetIn, widthIn: next.widthIn };
 }
 
 /**

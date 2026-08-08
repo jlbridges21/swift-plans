@@ -6,7 +6,7 @@ import type {
   PlanPoint,
   PlanStairs,
   StairRotationDeg,
-} from "../../types/plan-geometry";
+} from "../../types/plan-geometry.ts";
 
 /** Compute the 4-corner polygon for a stair (CCW), applying rotation about origin. */
 export function stairsPolygon(stairs: PlanStairs): PlanPoint[] {

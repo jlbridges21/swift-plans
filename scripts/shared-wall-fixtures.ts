@@ -30,6 +30,7 @@ export function rectRoom(
       { x, y: y + d },
     ],
     labelAnchor: { x: x + w / 2, y: y + d / 2 },
+    nameCustom: false,
   };
 }
 

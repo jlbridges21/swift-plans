@@ -8,9 +8,9 @@ import type {
   PlanPoint,
   PlanWall,
   RoomEdgeAnchor,
-} from "../../types/plan-geometry";
-import { openingWorldSpan } from "./openings";
-import { DERIVED_WALL_EXTERIOR, DERIVED_WALL_INTERIOR } from "./derive-walls";
+} from "../../types/plan-geometry.ts";
+import { openingWorldSpan } from "./openings.ts";
+import { DERIVED_WALL_EXTERIOR, DERIVED_WALL_INTERIOR } from "./derive-walls.ts";
 
 export type ResolvedOpeningGeom = {
   start: PlanPoint;
