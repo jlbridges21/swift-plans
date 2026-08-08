@@ -9,15 +9,17 @@ rendering lives at `/debug/plan-style`. Tokens live in
 
 **Textured architectural** is the locked look:
 
-- Warm off-white paper (`#f5f0e6`) and soft charcoal ink — never pure
-  black-on-white, never tied to app UI theme or `prefers-color-scheme`
-- Subtle tonal room fills by category (living / wet / service)
+- Cool white paper (`#ffffff`) and brand navy ink (`#0f172a`) — never pure
+  black-on-cream, never tied to app UI theme or `prefers-color-scheme`
+- Subtle cool tonal room fills derived from `#f8fafc` / `#eff6ff`
+- Dimensions in brand gray (`#64748b`); symbols in a lighter navy tint
 - Floor texture at ~3.5% opacity, by room type:
   - **Plank** (wide parallel lines, room long-axis): living room, dining,
     bedroom, entry
   - **Tile** (fine square grid): bathroom, kitchen, laundry
   - **None**: garage, closet, hallway
 - Total living area as a typographic footer element (garage excluded)
+- Unbranded by default — no logo or company name on the plan document
 
 Closed exterior walls are filled as **separate outer/inner SVG subpaths** with
 `fill-rule="evenodd"`. A single concatenated subpath drops the wrap-around

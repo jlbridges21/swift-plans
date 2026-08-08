@@ -19,6 +19,11 @@ import {
   type Point,
 } from "../src/components/plan/geometry.ts";
 import { sampleFloorGeometry } from "../src/components/plan/sample-plan.ts";
+import { planTokens } from "../src/lib/plan-style/tokens.ts";
+import {
+  createEmptyFloorGeometry,
+  isEmptyFloorGeometry,
+} from "../src/types/plan-geometry.ts";
 
 let failed = 0;
 
@@ -252,6 +257,34 @@ for (const door of geometry.doors) {
     "total living area ≈ 1450 sq ft",
     `got ${total.toFixed(1)}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 7. Empty geometry document — valid finite viewBox (new projects)
+// ---------------------------------------------------------------------------
+{
+  const empty = createEmptyFloorGeometry("Untitled");
+  assert(isEmptyFloorGeometry(empty), "createEmptyFloorGeometry is empty");
+  assert(empty.schemaVersion === 1, "empty schemaVersion is 1");
+  assert(empty.walls.length === 0, "empty walls array");
+  assert(empty.rooms.length === 0, "empty rooms array");
+
+  const margin = planTokens.sheetMargin;
+  const viewMinX = empty.meta.bounds.minX - margin;
+  const viewMinY = empty.meta.bounds.minY - margin;
+  const viewW =
+    empty.meta.bounds.maxX - empty.meta.bounds.minX + margin * 2;
+  const viewH =
+    empty.meta.bounds.maxY - empty.meta.bounds.minY + margin * 2;
+
+  assert(
+    [viewMinX, viewMinY, viewW, viewH].every(
+      (n) => Number.isFinite(n) && !Number.isNaN(n),
+    ),
+    "empty geometry viewBox values are finite",
+    `viewBox=${viewMinX} ${viewMinY} ${viewW} ${viewH}`,
+  );
+  assert(viewW > 0 && viewH > 0, "empty geometry viewBox has positive size");
 }
 
 console.log("");

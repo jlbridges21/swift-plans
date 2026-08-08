@@ -43,7 +43,7 @@ export default async function DebugSupabasePage() {
         <p className="text-sm font-medium tracking-wide text-accent uppercase">
           Debug
         </p>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+        <h1 className="text-3xl font-semibold tracking-tight text-navy sm:text-4xl">
           Swift Plans
         </h1>
         <p className="max-w-md text-base leading-relaxed text-fg-muted">

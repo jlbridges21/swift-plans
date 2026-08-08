@@ -8,7 +8,7 @@ export default function PlanStyleDebugPage() {
         <p className="text-sm font-medium tracking-wide text-accent uppercase">
           Debug · Plan style
         </p>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+        <h1 className="text-3xl font-semibold tracking-tight text-navy">
           Floor plan reference
         </h1>
         <p className="text-base leading-relaxed text-fg-muted">
@@ -17,7 +17,7 @@ export default function PlanStyleDebugPage() {
         </p>
       </header>
 
-      <section className="overflow-hidden rounded-lg border border-border bg-[#f5f0e6]">
+      <section className="overflow-hidden rounded-lg border border-border bg-elevated shadow-card">
         <PlanDrawing geometry={sampleFloorGeometry} />
       </section>
     </main>

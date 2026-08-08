@@ -1,60 +1,56 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
-   Swift Plans design tokens
-   Modern, minimal, spacious SaaS/productivity aesthetic.
-   Avoid dense CAD chrome, tiny icon grids, and decorative clutter.
+   Swift Plans app UI tokens — Swift Aerial Media palette.
+   Plan document colors live separately in src/lib/plan-style/tokens.ts.
    --------------------------------------------------------------------------- */
 
 :root {
   /* Surfaces */
-  --sp-bg: #f4f6f8;
+  --sp-bg: #f8fafc;
   --sp-bg-elevated: #ffffff;
-  --sp-bg-muted: #e8edf2;
+  --sp-bg-tinted: #eff6ff;
 
   /* Ink */
-  --sp-fg: #0f1720;
-  --sp-fg-muted: #5b6b7c;
-  --sp-fg-subtle: #8a9aab;
+  --sp-navy: #0f172a;
+  --sp-fg: #111827;
+  --sp-fg-muted: #64748b;
+  --sp-fg-subtle: #94a3b8;
 
-  /* Accent — clear action color, not purple */
-  --sp-accent: #0f6e56;
-  --sp-accent-hover: #0b5a46;
+  /* Primary action — brand blue */
+  --sp-accent: #2563eb;
+  --sp-accent-hover: #1d4ed8;
   --sp-accent-fg: #ffffff;
 
   /* Borders & focus */
-  --sp-border: #d5dde6;
-  --sp-border-strong: #b8c4d0;
-  --sp-focus: #0f6e56;
+  --sp-border: #e2e8f0;
+  --sp-border-strong: #cbd5e1;
+  --sp-focus: #2563eb;
 
   /* Status */
-  --sp-success: #0f6e56;
+  --sp-success: #166534;
   --sp-danger: #b42318;
   --sp-warning: #b54708;
 
-  /* Radii */
-  --sp-radius-sm: 0.375rem;
-  --sp-radius-md: 0.5rem;
-  --sp-radius-lg: 0.75rem;
+  /* Radii — 14px cards; 8px controls */
+  --sp-radius-sm: 0.5rem; /* 8px — buttons/inputs */
+  --sp-radius-md: 0.5rem; /* 8px */
+  --sp-radius-lg: 0.875rem; /* 14px — cards */
 
-  /* Spacing rhythm (used by components; Tailwind scale also available) */
-  --sp-space-1: 0.25rem;
-  --sp-space-2: 0.5rem;
-  --sp-space-3: 0.75rem;
-  --sp-space-4: 1rem;
-  --sp-space-6: 1.5rem;
-  --sp-space-8: 2rem;
-  --sp-space-12: 3rem;
+  /* Card elevation */
+  --sp-shadow-card: 0 12px 35px rgba(15, 23, 42, 0.1);
 
-  /* Touch target minimum (iOS HIG) */
-  --sp-touch-min: 2.75rem; /* 44px */
+  /* Touch target minimum (reference uses 48px) */
+  --sp-touch-min: 3rem; /* 48px */
 }
 
 @theme inline {
   --color-background: var(--sp-bg);
   --color-foreground: var(--sp-fg);
+  --color-navy: var(--sp-navy);
   --color-elevated: var(--sp-bg-elevated);
-  --color-muted: var(--sp-bg-muted);
+  --color-tinted: var(--sp-bg-tinted);
+  --color-muted: var(--sp-bg-tinted);
   --color-fg-muted: var(--sp-fg-muted);
   --color-fg-subtle: var(--sp-fg-subtle);
   --color-accent: var(--sp-accent);
@@ -71,6 +67,8 @@
   --radius-md: var(--sp-radius-md);
   --radius-lg: var(--sp-radius-lg);
 
+  --shadow-card: var(--sp-shadow-card);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -81,17 +79,13 @@ html {
 
 body {
   min-height: 100%;
-  background:
-    radial-gradient(1200px 600px at 10% -10%, #dce8e3 0%, transparent 55%),
-    radial-gradient(900px 500px at 100% 0%, #d9e3ef 0%, transparent 50%),
-    var(--sp-bg);
+  background: var(--sp-bg);
   color: var(--sp-fg);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Prefer visible focus for keyboard users */
 :focus-visible {
   outline: 2px solid var(--sp-focus);
   outline-offset: 2px;

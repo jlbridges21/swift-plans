@@ -7,7 +7,7 @@ type InputProps = InputHTMLAttributes<HTMLInputElement> & {
 };
 
 /**
- * Labeled text input. Minimum control height 44px for touch.
+ * Labeled text input. Minimum control height 48px for touch.
  */
 export function Input({
   label,
@@ -26,16 +26,16 @@ export function Input({
 
   return (
     <label className="flex w-full flex-col gap-1.5 text-sm" htmlFor={inputId}>
-      <span className="font-medium text-foreground">{label}</span>
+      <span className="font-medium text-navy">{label}</span>
       <input
         id={inputId}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy}
         className={[
-          "min-h-[var(--sp-touch-min)] w-full rounded-md border bg-elevated",
+          "min-h-[var(--sp-touch-min)] w-full rounded-sm border bg-elevated",
           "px-3 text-base text-foreground placeholder:text-fg-subtle",
           "transition-colors hover:border-border-strong",
-          "disabled:cursor-not-allowed disabled:bg-muted disabled:opacity-70",
+          "disabled:cursor-not-allowed disabled:bg-background disabled:opacity-70",
           error ? "border-danger" : "border-border",
           className,
         ].join(" ")}

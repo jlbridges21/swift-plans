@@ -128,3 +128,41 @@ export type FloorGeometry = {
   stairs: PlanStairs[];
   labels: PlanLabel[];
 };
+
+/** Default empty-canvas bounds in inches (40' × 30'). Avoids NaN viewBox. */
+export const EMPTY_GEOMETRY_BOUNDS = {
+  minX: 0,
+  minY: 0,
+  maxX: 480,
+  maxY: 360,
+} as const;
+
+/** Valid empty geometry document for a brand-new floor. */
+export function createEmptyFloorGeometry(title = ""): FloorGeometry {
+  return {
+    schemaVersion: 1,
+    meta: {
+      title,
+      bounds: { ...EMPTY_GEOMETRY_BOUNDS },
+    },
+    walls: [],
+    rooms: [],
+    doors: [],
+    windows: [],
+    openings: [],
+    stairs: [],
+    labels: [],
+  };
+}
+
+export function isEmptyFloorGeometry(geometry: FloorGeometry): boolean {
+  return (
+    geometry.walls.length === 0 &&
+    geometry.rooms.length === 0 &&
+    geometry.doors.length === 0 &&
+    geometry.windows.length === 0 &&
+    geometry.openings.length === 0 &&
+    geometry.stairs.length === 0 &&
+    geometry.labels.length === 0
+  );
+}

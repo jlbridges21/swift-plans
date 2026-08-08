@@ -16,7 +16,10 @@ import {
   floorTextureForRoomType,
   planTokens,
 } from "@/lib/plan-style/tokens";
-import type { FloorGeometry } from "@/types/plan-geometry";
+import {
+  isEmptyFloorGeometry,
+  type FloorGeometry,
+} from "@/types/plan-geometry";
 
 type PlanDrawingProps = {
   geometry: FloorGeometry;
@@ -30,13 +33,29 @@ function wallById(geometry: FloorGeometry, wallId: string) {
   return wall;
 }
 
-export function PlanDrawing({ geometry }: PlanDrawingProps) {
+/** Finite viewBox parts for empty and non-empty documents. */
+export function planViewBox(geometry: FloorGeometry): {
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+} {
   const margin = planTokens.sheetMargin;
+  const { bounds } = geometry.meta;
+  return {
+    minX: bounds.minX - margin,
+    minY: bounds.minY - margin,
+    width: bounds.maxX - bounds.minX + margin * 2,
+    height: bounds.maxY - bounds.minY + margin * 2,
+  };
+}
+
+export function PlanDrawing({ geometry }: PlanDrawingProps) {
+  const { minX: viewMinX, minY: viewMinY, width: viewW, height: viewH } =
+    planViewBox(geometry);
   const { bounds, title } = geometry.meta;
-  const viewMinX = bounds.minX - margin;
-  const viewMinY = bounds.minY - margin;
-  const viewW = bounds.maxX - bounds.minX + margin * 2;
-  const viewH = bounds.maxY - bounds.minY + margin * 2;
+  const margin = planTokens.sheetMargin;
+  const empty = isEmptyFloorGeometry(geometry);
 
   const livingRooms = geometry.rooms.filter((r) => r.type !== "garage");
   const totalLivingSqFt = livingRooms.reduce(
@@ -52,7 +71,7 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
     <svg
       viewBox={`${viewMinX} ${viewMinY} ${viewW} ${viewH}`}
       role="img"
-      aria-label={title}
+      aria-label={title || "Floor plan"}
       style={{
         width: "100%",
         height: "auto",
@@ -80,7 +99,7 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
                   y1="0"
                   x2="0"
                   y2={spacing}
-                  stroke={planTokens.ink}
+                  stroke={planTokens.symbol}
                   strokeWidth={planTokens.stroke.annotation}
                   opacity={planTokens.textureOpacity}
                 />
@@ -99,7 +118,7 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
               <path
                 d={`M 0 ${spacing / 2} H ${spacing} M ${spacing / 2} 0 V ${spacing}`}
                 fill="none"
-                stroke={planTokens.ink}
+                stroke={planTokens.symbol}
                 strokeWidth={planTokens.stroke.annotation}
                 opacity={planTokens.textureOpacity}
               />
@@ -116,6 +135,18 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
         fill={planTokens.paper}
       />
 
+      {empty ? (
+        <text
+          x={(bounds.minX + bounds.maxX) / 2}
+          y={(bounds.minY + bounds.maxY) / 2}
+          textAnchor="middle"
+          fontFamily={PLAN_FONT_FAMILY}
+          fill={planTokens.inkSubtle}
+          fontSize={14}
+        >
+          Empty floor plan — add your first room next
+        </text>
+      ) : null}
       {geometry.rooms.map((room) => (
         <g key={`fill-${room.id}`}>
           <path
@@ -188,7 +219,7 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
           <g
             key={win.id}
             fill="none"
-            stroke={planTokens.ink}
+            stroke={planTokens.symbol}
             strokeWidth={planTokens.window.stroke}
             strokeLinecap="square"
           >
@@ -212,7 +243,7 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
           <g
             key={door.id}
             fill="none"
-            stroke={planTokens.ink}
+            stroke={planTokens.symbol}
             strokeWidth={planTokens.doorSwing.stroke}
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -277,17 +308,19 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
         );
       })}
 
-      <text
-        x={bounds.minX + margin * 0.15}
-        y={bounds.maxY + margin * 0.55}
-        fontFamily={PLAN_FONT_FAMILY}
-        fill={planTokens.inkMuted}
-        fontSize={planTokens.typography.totalAreaSize}
-        fontWeight={600}
-        letterSpacing="0.08em"
-      >
-        TOTAL LIVING AREA  {Math.round(totalLivingSqFt).toLocaleString()} SQ FT
-      </text>
+      {!empty ? (
+        <text
+          x={bounds.minX + margin * 0.15}
+          y={bounds.maxY + margin * 0.55}
+          fontFamily={PLAN_FONT_FAMILY}
+          fill={planTokens.inkMuted}
+          fontSize={planTokens.typography.totalAreaSize}
+          fontWeight={600}
+          letterSpacing="0.08em"
+        >
+          TOTAL LIVING AREA  {Math.round(totalLivingSqFt).toLocaleString()} SQ FT
+        </text>
+      ) : null}
     </svg>
   );
 }
