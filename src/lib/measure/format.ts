@@ -7,6 +7,9 @@ export function formatMeasure(inches: number): string {
   const whole = Math.round(inches);
   const feet = Math.floor(whole / 12);
   const rem = whole % 12;
+  if (feet === 0) {
+    return `${rem}"`;
+  }
   if (rem === 0) {
     return `${feet}'`;
   }

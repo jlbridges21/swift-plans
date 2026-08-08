@@ -47,6 +47,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "exterior",
       closed: true,
       thickness: EX,
+      roomIds: [],
       centerline: exteriorCenterline,
     },
     {
@@ -54,6 +55,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(180, 6), pt(180, 162)],
     },
     {
@@ -61,6 +63,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(180, 96), pt(312, 96)],
     },
     {
@@ -68,6 +71,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(228, 96), pt(228, 162)],
     },
     {
@@ -75,6 +79,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(6, 162), pt(312, 162)],
     },
     {
@@ -82,6 +87,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(312, 6), pt(312, 162)],
     },
     {
@@ -89,6 +95,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(312, 84), pt(384, 84)],
     },
     {
@@ -96,6 +103,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(384, 6), pt(384, 282)],
     },
     {
@@ -103,6 +111,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(384, 144), pt(498, 144)],
     },
     {
@@ -110,6 +119,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(300, 162), pt(300, 378)],
     },
     {
@@ -117,6 +127,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(192, 276), pt(300, 276)],
     },
     {
@@ -124,6 +135,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(192, 276), pt(192, 378)],
     },
     {
@@ -131,6 +143,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(372, 162), pt(372, 282)],
     },
     {
@@ -138,6 +151,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(372, 228), pt(438, 228)],
     },
     {
@@ -145,6 +159,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "interior",
       closed: false,
       thickness: IN,
+      roomIds: [],
       centerline: [pt(432, 162), pt(432, 228)],
     },
     {
@@ -152,6 +167,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       kind: "exterior",
       closed: false,
       thickness: EX,
+      roomIds: [],
       centerline: [pt(501, 147), pt(501, 381)],
     },
   ],

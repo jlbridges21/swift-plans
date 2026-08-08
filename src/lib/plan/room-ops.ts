@@ -1,18 +1,16 @@
-import { planTokens } from "@/lib/plan-style/tokens";
+import {
+  deriveWallsFromRooms,
+  exteriorWallFloorSpan,
+} from "./derive-walls";
 import {
   EMPTY_GEOMETRY_BOUNDS,
   type FloorGeometry,
   type PlanPoint,
   type PlanRoom,
-  type PlanWall,
 } from "@/types/plan-geometry";
 
 const ROOM_GAP_IN = 36; // 3' clear gap between standalone rooms
 const FIRST_ORIGIN: PlanPoint = { x: 48, y: 48 };
-
-function roomWallId(roomId: string): string {
-  return `wall-${roomId}`;
-}
 
 function aabb(points: PlanPoint[]): {
   minX: number;
@@ -34,7 +32,9 @@ function aabb(points: PlanPoint[]): {
 }
 
 /** Recompute content bounds from rooms + walls (or empty defaults). */
-export function recomputeBounds(geometry: FloorGeometry): FloorGeometry["meta"]["bounds"] {
+export function recomputeBounds(
+  geometry: FloorGeometry,
+): FloorGeometry["meta"]["bounds"] {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -64,13 +64,41 @@ export function recomputeBounds(geometry: FloorGeometry): FloorGeometry["meta"][
   return { minX, minY, maxX, maxY };
 }
 
-function withBounds(geometry: FloorGeometry): FloorGeometry {
-  return {
+/** Re-derive walls from rooms and refresh bounds. Always schemaVersion 2. */
+export function finalizeGeometry(geometry: FloorGeometry): FloorGeometry {
+  const walls = deriveWallsFromRooms(geometry.rooms);
+  const next: FloorGeometry = {
     ...geometry,
+    schemaVersion: 2,
+    walls,
+  };
+  return {
+    ...next,
     meta: {
-      ...geometry.meta,
-      bounds: recomputeBounds(geometry),
+      ...next.meta,
+      bounds: recomputeBounds(next),
     },
+  };
+}
+
+/**
+ * Migrate v1 documents (per-room wall rings) to v2 (derived walls).
+ * Lossless for rooms; discards stored walls and recomputes.
+ */
+export function migrateGeometry(geometry: FloorGeometry): {
+  geometry: FloorGeometry;
+  didMigrate: boolean;
+} {
+  if (geometry.schemaVersion >= 2) {
+    // Re-derive so stored walls cannot drift from rooms
+    return { geometry: finalizeGeometry(geometry), didMigrate: false };
+  }
+  return {
+    geometry: finalizeGeometry({
+      ...geometry,
+      walls: [],
+    }),
+    didMigrate: true,
   };
 }
 
@@ -89,59 +117,50 @@ function nextOrigin(geometry: FloorGeometry): PlanPoint {
   if (geometry.rooms.length === 0) {
     return { ...FIRST_ORIGIN };
   }
-  const half = planTokens.wallExterior / 2;
   let maxX = -Infinity;
   for (const room of geometry.rooms) {
     for (const p of room.polygon) maxX = Math.max(maxX, p.x);
   }
-  for (const wall of geometry.walls) {
-    for (const p of wall.centerline) maxX = Math.max(maxX, p.x + half);
-  }
-  return { x: maxX + ROOM_GAP_IN + half, y: FIRST_ORIGIN.y };
+  return { x: maxX + ROOM_GAP_IN, y: FIRST_ORIGIN.y };
 }
 
-function buildRoomGeometry(
+function newRoomId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `room-${Date.now()}`;
+}
+
+function buildRectRoom(
   roomId: string,
   name: string,
   origin: PlanPoint,
   widthIn: number,
   depthIn: number,
-): { room: PlanRoom; wall: PlanWall } {
-  const half = planTokens.wallExterior / 2;
+  existing?: Pick<PlanRoom, "type" | "category">,
+): PlanRoom {
   const { x: ox, y: oy } = origin;
+  // CCW rectangle
   const polygon: PlanPoint[] = [
     { x: ox, y: oy },
     { x: ox + widthIn, y: oy },
     { x: ox + widthIn, y: oy + depthIn },
     { x: ox, y: oy + depthIn },
   ];
-  const centerline: PlanPoint[] = [
-    { x: ox - half, y: oy - half },
-    { x: ox + widthIn + half, y: oy - half },
-    { x: ox + widthIn + half, y: oy + depthIn + half },
-    { x: ox - half, y: oy + depthIn + half },
-  ];
   return {
-    room: {
-      id: roomId,
-      name,
-      type: "living_room",
-      category: "living",
-      polygon,
-      labelAnchor: { x: ox + widthIn / 2, y: oy + depthIn / 2 },
-    },
-    wall: {
-      id: roomWallId(roomId),
-      centerline,
-      thickness: planTokens.wallExterior,
-      kind: "exterior",
-      closed: true,
-    },
+    id: roomId,
+    name,
+    type: existing?.type ?? "living_room",
+    category: existing?.category ?? "living",
+    polygon,
+    labelAnchor: { x: ox + widthIn / 2, y: oy + depthIn / 2 },
   };
 }
 
 /** Axis-aligned width × depth of a room polygon (inches). */
-export function roomSizeInches(room: PlanRoom): { width: number; depth: number } {
+export function roomSizeInches(room: PlanRoom): {
+  width: number;
+  depth: number;
+} {
   const box = aabb(room.polygon);
   return { width: box.maxX - box.minX, depth: box.maxY - box.minY };
 }
@@ -156,24 +175,70 @@ export function addRectangularRoom(
   widthIn: number,
   depthIn: number,
 ): FloorGeometry {
-  const roomId =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `room-${Date.now()}`;
-  const name = `Room ${nextRoomNumber(geometry)}`;
-  const origin = nextOrigin(geometry);
-  const { room, wall } = buildRoomGeometry(
-    roomId,
-    name,
-    origin,
+  const room = buildRectRoom(
+    newRoomId(),
+    `Room ${nextRoomNumber(geometry)}`,
+    nextOrigin(geometry),
     widthIn,
     depthIn,
   );
-  return withBounds({
+  return finalizeGeometry({
     ...geometry,
-    schemaVersion: 1,
     rooms: [...geometry.rooms, room],
-    walls: [...geometry.walls, wall],
+  });
+}
+
+/**
+ * Attach a new room to an exterior wall, sharing the floor-edge span exactly.
+ * Width is along the wall; depth is outward from the existing room.
+ */
+export function addRoomAdjoiningWall(
+  geometry: FloorGeometry,
+  wallId: string,
+  widthIn: number,
+  depthIn: number,
+): FloorGeometry {
+  const wall = geometry.walls.find((w) => w.id === wallId);
+  if (!wall || wall.kind !== "exterior" || wall.roomIds.length !== 1) {
+    return geometry;
+  }
+
+  const span = exteriorWallFloorSpan(geometry.rooms, wallId);
+  if (!span || span.length < 1e-3) return geometry;
+
+  const { a, b, outward } = span;
+  const wallLen = span.length;
+  const useWidth = Math.min(widthIn, wallLen);
+  const ux = (b.x - a.x) / wallLen;
+  const uy = (b.y - a.y) / wallLen;
+
+  // Shared edge starts at `a`, length useWidth along the wall
+  const s0 = { x: a.x, y: a.y };
+  const s1 = { x: a.x + ux * useWidth, y: a.y + uy * useWidth };
+  const n = outward;
+  // CCW: s0 → s0+n*depth → s1+n*depth → s1
+  const polygon: PlanPoint[] = [
+    s0,
+    { x: s0.x + n.x * depthIn, y: s0.y + n.y * depthIn },
+    { x: s1.x + n.x * depthIn, y: s1.y + n.y * depthIn },
+    s1,
+  ];
+
+  const room: PlanRoom = {
+    id: newRoomId(),
+    name: `Room ${nextRoomNumber(geometry)}`,
+    type: "living_room",
+    category: "living",
+    polygon,
+    labelAnchor: {
+      x: (s0.x + s1.x) / 2 + (n.x * depthIn) / 2,
+      y: (s0.y + s1.y) / 2 + (n.y * depthIn) / 2,
+    },
+  };
+
+  return finalizeGeometry({
+    ...geometry,
+    rooms: [...geometry.rooms, room],
   });
 }
 
@@ -186,24 +251,17 @@ export function resizeRoom(
   const existing = geometry.rooms.find((r) => r.id === roomId);
   if (!existing) return geometry;
   const origin = roomOrigin(existing);
-  const { room, wall } = buildRoomGeometry(
+  const room = buildRectRoom(
     roomId,
     existing.name,
     origin,
     widthIn,
     depthIn,
+    existing,
   );
-  // Preserve type/category from existing room
-  room.type = existing.type;
-  room.category = existing.category;
-
-  return withBounds({
+  return finalizeGeometry({
     ...geometry,
-    schemaVersion: 1,
     rooms: geometry.rooms.map((r) => (r.id === roomId ? room : r)),
-    walls: geometry.walls.map((w) =>
-      w.id === roomWallId(roomId) ? wall : w,
-    ),
   });
 }
 
@@ -215,9 +273,8 @@ export function translateRoom(
 ): FloorGeometry {
   if (dx === 0 && dy === 0) return geometry;
   const shift = (p: PlanPoint): PlanPoint => ({ x: p.x + dx, y: p.y + dy });
-  return withBounds({
+  return finalizeGeometry({
     ...geometry,
-    schemaVersion: 1,
     rooms: geometry.rooms.map((r) =>
       r.id === roomId
         ? {
@@ -227,11 +284,6 @@ export function translateRoom(
           }
         : r,
     ),
-    walls: geometry.walls.map((w) =>
-      w.id === roomWallId(roomId)
-        ? { ...w, centerline: w.centerline.map(shift) }
-        : w,
-    ),
   });
 }
 
@@ -239,12 +291,14 @@ export function deleteRoom(
   geometry: FloorGeometry,
   roomId: string,
 ): FloorGeometry {
-  return withBounds({
+  return finalizeGeometry({
     ...geometry,
-    schemaVersion: 1,
     rooms: geometry.rooms.filter((r) => r.id !== roomId),
-    walls: geometry.walls.filter((w) => w.id !== roomWallId(roomId)),
   });
 }
 
-export { roomWallId };
+/** Whether "Add Room Here" is offered for this wall. */
+export function canAdjoinWall(geometry: FloorGeometry, wallId: string): boolean {
+  const wall = geometry.walls.find((w) => w.id === wallId);
+  return Boolean(wall && wall.kind === "exterior" && wall.roomIds.length === 1);
+}

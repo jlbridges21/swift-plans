@@ -10,7 +10,7 @@ export type SaveGeometryResult =
 
 /**
  * Persist a floor's geometry document. Ownership enforced by RLS + requireUser.
- * Preserves schemaVersion from the client document (must remain 1 for now).
+ * Preserves schemaVersion from the client document (2 for derived walls).
  */
 export async function saveFloorGeometry(
   floorId: string,
@@ -21,7 +21,7 @@ export async function saveFloorGeometry(
   if (!floorId) {
     return { ok: false, error: "Missing floor." };
   }
-  if (!geometry || geometry.schemaVersion !== 1) {
+  if (!geometry || (geometry.schemaVersion !== 1 && geometry.schemaVersion !== 2)) {
     return { ok: false, error: "Invalid floor plan data." };
   }
 

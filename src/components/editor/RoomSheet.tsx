@@ -7,33 +7,49 @@ import { formatMeasure, parseMeasure } from "@/lib/measure";
 
 export type RoomSheetMode =
   | { kind: "add" }
-  | { kind: "edit"; roomId: string; name: string; widthIn: number; depthIn: number };
+  | {
+      kind: "edit";
+      roomId: string;
+      name: string;
+      widthIn: number;
+      depthIn: number;
+    }
+  | {
+      kind: "adjoin";
+      wallId: string;
+      defaultWidthIn: number;
+    };
 
 type RoomSheetProps = {
   mode: RoomSheetMode;
   onClose: () => void;
   onConfirmAdd: (widthIn: number, depthIn: number) => void;
+  onConfirmAdjoin: (wallId: string, widthIn: number, depthIn: number) => void;
   onConfirmEdit: (roomId: string, widthIn: number, depthIn: number) => void;
   onDelete: (roomId: string) => void;
   onTypingChange: (typing: boolean) => void;
 };
 
 function initialWidth(mode: RoomSheetMode): string {
-  return mode.kind === "edit" ? formatMeasure(mode.widthIn) : "";
+  if (mode.kind === "edit") return formatMeasure(mode.widthIn);
+  if (mode.kind === "adjoin") return formatMeasure(mode.defaultWidthIn);
+  return "";
 }
 
 function initialDepth(mode: RoomSheetMode): string {
-  return mode.kind === "edit" ? formatMeasure(mode.depthIn) : "";
+  if (mode.kind === "edit") return formatMeasure(mode.depthIn);
+  return "";
 }
 
 /**
- * Add / edit room sheet — bottom sheet on mobile, centered panel on desktop.
+ * Add / edit / adjoin room sheet — bottom sheet on mobile, centered panel on desktop.
  * Remount via `key` when mode changes so fields reset without an effect.
  */
 export function RoomSheet({
   mode,
   onClose,
   onConfirmAdd,
+  onConfirmAdjoin,
   onConfirmEdit,
   onDelete,
   onTypingChange,
@@ -45,8 +61,14 @@ export function RoomSheet({
   const depthParsed = parseMeasure(depthText);
   const canSubmit = widthParsed.ok && depthParsed.ok;
 
-  const title = mode.kind === "add" ? "Add room" : mode.name;
-  const submitLabel = mode.kind === "add" ? "Add room" : "Update size";
+  const title =
+    mode.kind === "add"
+      ? "Add room"
+      : mode.kind === "adjoin"
+        ? "Add room here"
+        : mode.name;
+  const submitLabel =
+    mode.kind === "edit" ? "Update size" : "Add room";
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -54,6 +76,8 @@ export function RoomSheet({
     onTypingChange(false);
     if (mode.kind === "add") {
       onConfirmAdd(widthParsed.inches, depthParsed.inches);
+    } else if (mode.kind === "adjoin") {
+      onConfirmAdjoin(mode.wallId, widthParsed.inches, depthParsed.inches);
     } else {
       onConfirmEdit(mode.roomId, widthParsed.inches, depthParsed.inches);
     }
@@ -98,6 +122,13 @@ export function RoomSheet({
           </button>
         </div>
 
+        {mode.kind === "adjoin" ? (
+          <p className="text-sm text-fg-muted">
+            Width defaults to the selected wall. Depth is how far the new room
+            extends outward.
+          </p>
+        ) : null}
+
         <form
           className="flex flex-col gap-4"
           onSubmit={handleSubmit}
@@ -112,16 +143,21 @@ export function RoomSheet({
             label="Width"
             value={widthText}
             onChange={setWidthText}
-            autoFocus
+            autoFocus={mode.kind !== "adjoin"}
           />
           <MeasureField
             label="Depth"
             value={depthText}
             onChange={setDepthText}
+            autoFocus={mode.kind === "adjoin"}
           />
 
           <div className="flex flex-col gap-2 pt-1 sm:flex-row-reverse">
-            <Button type="submit" disabled={!canSubmit} className="w-full sm:w-auto">
+            <Button
+              type="submit"
+              disabled={!canSubmit}
+              className="w-full sm:w-auto"
+            >
               {submitLabel}
             </Button>
             <Button

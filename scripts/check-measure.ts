@@ -11,6 +11,7 @@ import {
   MAX_MEASURE_INCHES,
   parseMeasure,
 } from "../src/lib/measure/parse.ts";
+import { formatFeetInches } from "../src/components/plan/geometry.ts";
 
 let failed = 0;
 
@@ -126,7 +127,9 @@ for (const inches of roundTripCases) {
 // Format shape
 assert(formatMeasure(150) === "12' 6\"", 'format 150 → 12\' 6"');
 assert(formatMeasure(144) === "12'", "format 144 → 12'");
-assert(formatMeasure(6) === "0' 6\"", 'format 6 → 0\' 6"');
+assert(formatMeasure(6) === "6\"", 'formatMeasure 6 → 6"');
+assert(formatFeetInches(6) === "6\"", 'formatFeetInches 6 → 6"');
+assert(formatFeetInches(150) === "12' 6\"", 'formatFeetInches 150 → 12\' 6"');
 
 console.log("");
 if (failed > 0) {

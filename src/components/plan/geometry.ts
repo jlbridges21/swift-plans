@@ -213,6 +213,9 @@ export function formatFeetInches(inches: number): string {
   const whole = Math.round(inches);
   const feet = Math.floor(whole / 12);
   const rem = whole % 12;
+  if (feet === 0) {
+    return `${rem}"`;
+  }
   return `${feet}' ${rem}"`;
 }
 

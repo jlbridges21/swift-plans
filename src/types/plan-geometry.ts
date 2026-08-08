@@ -5,10 +5,8 @@
  * Units: all coordinates and lengths are inches.
  * Drawing space uses the same inches 1:1 (see plan-style tokens).
  *
- * Known Phase 2 gaps (intentional for now):
- * - No shared-wall / T-junction graph yet — walls are independent centerlines.
- * - Rooms do not list their bounding wall ids.
- * Phase 2 should add junction/adjacency without breaking these attachment fields.
+ * schemaVersion 2: rooms are authoritative; walls are derived from room edges
+ * (see src/lib/plan/derive-walls.ts). schemaVersion 1 stored per-room wall rings.
  */
 
 export type PlanPoint = { x: number; y: number };
@@ -39,15 +37,20 @@ export type PlanRoomType =
 export type PlanRoomCategory = "living" | "wet" | "service";
 
 export type PlanWall = {
-  /** Stable id — doors/windows reference this. */
+  /** Stable id — doors/windows reference this. See derive-walls id scheme. */
   id: string;
   /** Centerline polyline in inches. */
   centerline: PlanPoint[];
   /** Filled wall thickness in inches. */
   thickness: number;
   kind: WallKind;
-  /** True for a closed exterior shell loop. */
+  /** True for a closed exterior shell loop. Derived walls are open segments. */
   closed: boolean;
+  /**
+   * Rooms this wall borders.
+   * Exterior: one room id. Interior: two room ids (shared wall).
+   */
+  roomIds: string[];
 };
 
 export type PlanRoom = {
@@ -109,7 +112,7 @@ export type PlanLabel = {
 };
 
 export type FloorGeometry = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   meta: {
     title: string;
     /** Content bounds before sheet margin. */
@@ -140,7 +143,7 @@ export const EMPTY_GEOMETRY_BOUNDS = {
 /** Valid empty geometry document for a brand-new floor. */
 export function createEmptyFloorGeometry(title = ""): FloorGeometry {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     meta: {
       title,
       bounds: { ...EMPTY_GEOMETRY_BOUNDS },

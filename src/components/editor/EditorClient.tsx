@@ -17,11 +17,15 @@ import { Button } from "@/components/ui/Button";
 import { saveFloorGeometry } from "@/lib/plan/actions";
 import {
   addRectangularRoom,
+  addRoomAdjoiningWall,
+  canAdjoinWall,
   deleteRoom,
+  migrateGeometry,
   resizeRoom,
   roomSizeInches,
   translateRoom,
 } from "@/lib/plan/room-ops";
+import { exteriorWallFloorSpan } from "@/lib/plan/derive-walls";
 import type { FloorGeometry } from "@/types/plan-geometry";
 
 export type SaveStatus =
@@ -70,12 +74,15 @@ export function EditorClient({
   floors,
   initialGeometry,
 }: EditorClientProps) {
-  const [geometry, setGeometry] = useState<FloorGeometry>(initialGeometry);
+  const migrated = migrateGeometry(initialGeometry);
+  const [geometry, setGeometry] = useState<FloorGeometry>(migrated.geometry);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
   const [sheet, setSheet] = useState<RoomSheetMode | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [interacting, setInteracting] = useState(false);
   const [typing, setTyping] = useState(false);
+  const needsMigrationSave = useRef(migrated.didMigrate);
 
   const geometryRef = useRef(geometry);
   const dirtyRef = useRef(false);
@@ -83,7 +90,6 @@ export function EditorClient({
   const backoffRef = useRef(1000);
   const failCountRef = useRef(0);
   const saveInFlightRef = useRef(false);
-  /** False until after first paint — blocks autosave on mount. */
   const loadReadyRef = useRef(false);
   const interactingRef = useRef(false);
   const typingRef = useRef(false);
@@ -103,6 +109,14 @@ export function EditorClient({
 
   useEffect(() => {
     loadReadyRef.current = true;
+    if (needsMigrationSave.current) {
+      needsMigrationSave.current = false;
+      dirtyRef.current = true;
+      setSaveStatus("dirty");
+      saveTimerRef.current = setTimeout(() => {
+        void performSaveRef.current();
+      }, 400);
+    }
   }, []);
 
   const clearSaveTimer = useCallback(() => {
@@ -178,7 +192,6 @@ export function EditorClient({
     }, SAVE_DEBOUNCE_MS);
   }, [clearSaveTimer]);
 
-  // When interaction/typing settles, schedule save if dirty
   useEffect(() => {
     if (!loadReadyRef.current || !dirtyRef.current) return;
     if (interacting || typing) {
@@ -216,6 +229,9 @@ export function EditorClient({
   }, []);
 
   const selectedRoom = geometry.rooms.find((r) => r.id === selectedRoomId);
+  const selectedWall = geometry.walls.find((w) => w.id === selectedWallId);
+  const wallCanAdjoin =
+    selectedWallId !== null && canAdjoinWall(geometry, selectedWallId);
 
   const openEditSheet = useCallback(() => {
     if (!selectedRoom) return;
@@ -229,6 +245,27 @@ export function EditorClient({
       depthIn: size.depth,
     });
   }, [selectedRoom]);
+
+  const openAdjoinSheet = useCallback(() => {
+    if (!selectedWallId || !wallCanAdjoin) return;
+    const span = exteriorWallFloorSpan(geometry.rooms, selectedWallId);
+    if (!span) return;
+    setTyping(true);
+    setSheet({
+      kind: "adjoin",
+      wallId: selectedWallId,
+      defaultWidthIn: span.length,
+    });
+  }, [geometry.rooms, selectedWallId, wallCanAdjoin]);
+
+  const sheetKey =
+    sheet?.kind === "add"
+      ? "add"
+      : sheet?.kind === "adjoin"
+        ? `adjoin-${sheet.wallId}`
+        : sheet?.kind === "edit"
+          ? `edit-${sheet.roomId}`
+          : "none";
 
   return (
     <div className="flex w-full flex-1 flex-col">
@@ -293,6 +330,7 @@ export function EditorClient({
             type="button"
             onClick={() => {
               setSelectedRoomId(null);
+              setSelectedWallId(null);
               setTyping(true);
               setSheet({ kind: "add" });
             }}
@@ -304,17 +342,28 @@ export function EditorClient({
               Edit {selectedRoom.name}
             </Button>
           ) : null}
+          {selectedWall && wallCanAdjoin ? (
+            <Button type="button" variant="secondary" onClick={openAdjoinSheet}>
+              Add Room Here
+            </Button>
+          ) : null}
         </div>
 
         <div className="overflow-hidden rounded-lg border border-border bg-elevated shadow-card">
           <EditorCanvas
             geometry={geometry}
             selectedRoomId={selectedRoomId}
+            selectedWallId={selectedWallId}
             onSelectRoom={(id) => {
               setSelectedRoomId(id);
+              if (id) setSelectedWallId(null);
               if (!id && sheet?.kind === "edit") {
                 setSheet(null);
               }
+            }}
+            onSelectWall={(id) => {
+              setSelectedWallId(id);
+              if (id) setSelectedRoomId(null);
             }}
             onMoveRoom={handleMoveRoom}
             onInteractionChange={handleInteractionChange}
@@ -354,11 +403,34 @@ export function EditorClient({
             </div>
           </aside>
         ) : null}
+
+        {selectedWall && !sheet ? (
+          <aside
+            className={[
+              "flex flex-col gap-3 rounded-lg border border-border bg-elevated p-4 shadow-card",
+              "sm:max-w-sm",
+            ].join(" ")}
+            aria-label="Wall controls"
+          >
+            <p className="text-sm font-semibold text-navy">
+              {selectedWall.kind === "interior" ? "Interior wall" : "Exterior wall"}
+            </p>
+            {wallCanAdjoin ? (
+              <Button type="button" className="w-full" onClick={openAdjoinSheet}>
+                Add Room Here
+              </Button>
+            ) : (
+              <p className="text-sm text-fg-muted">
+                This wall already borders two rooms.
+              </p>
+            )}
+          </aside>
+        ) : null}
       </div>
 
       {sheet ? (
         <RoomSheet
-          key={sheet.kind === "add" ? "add" : `edit-${sheet.roomId}`}
+          key={sheetKey}
           mode={sheet}
           onClose={() => {
             setTyping(false);
@@ -370,6 +442,20 @@ export function EditorClient({
             const newRoom = next.rooms[next.rooms.length - 1];
             mutateGeometry(next);
             setSheet(null);
+            setSelectedWallId(null);
+            setSelectedRoomId(newRoom?.id ?? null);
+          }}
+          onConfirmAdjoin={(wallId, widthIn, depthIn) => {
+            const next = addRoomAdjoiningWall(
+              geometry,
+              wallId,
+              widthIn,
+              depthIn,
+            );
+            const newRoom = next.rooms[next.rooms.length - 1];
+            mutateGeometry(next);
+            setSheet(null);
+            setSelectedWallId(null);
             setSelectedRoomId(newRoom?.id ?? null);
           }}
           onConfirmEdit={(roomId, widthIn, depthIn) => {
