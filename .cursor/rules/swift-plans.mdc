@@ -1,0 +1,49 @@
+---
+description: Swift Plans product context, architecture decisions, and development rules
+alwaysApply: true
+---
+
+# Swift Plans — Project Context
+
+## Product
+
+Swift Plans is a responsive web app for creating professional 2D floor plans for real-estate listings. A photographer opens it on an iPhone, enters room dimensions and relationships, and gets a clean plan for export (PNG/JPG/PDF/SVG) or a public interactive page. Geometry housekeeping (snapping, alignment, connected walls) is automatic and deterministic. Plans stay editable forever.
+
+## Not in scope (do not build)
+
+- Architectural CAD / construction documentation
+- LiDAR, ARKit, RoomPlan, camera scanning, CV, photogrammetry, Matterport-style capture
+- Any AI (room detection, geometry correction, labeling, measurement)
+- Billing, subscriptions, Stripe, credits
+- Organizations, teams, invitations, roles/permissions
+- Offline mode / offline sync
+- Native mobile apps (web only)
+- CRM fields (agent, MLS number, price, brokerage, client)
+
+If a task seems to require one of these, stop and say so.
+
+## Core principles
+
+1. **Speed over completeness** — fast, mostly-correct beats slow perfect; everything is editable later
+2. **Simplicity over power** — prefer what makes the common case faster
+3. **Mobile-first, desktop-equal** — same app, data model, and capabilities on both
+4. **Structured data, not pictures** — plans are geometry; rendering/export derive from it
+5. **Deterministic, not AI** — snapping/alignment use plain math
+6. **Editable forever** — a plan opened months later is fully editable
+
+## Architecture (do not re-litigate)
+
+- **Stack:** Next.js App Router + TypeScript + React; Vercel; Supabase (Postgres, Auth, Storage)
+- **Editor rendering:** custom SVG + React only — not Canvas, Konva, Fabric, PixiJS, or React Flow
+- **Rooms are polygons:** created via width×depth if useful, but stored as vertices/walls from the start; no separate rectangle type
+- **Storage:** relational rows for projects/floors/branding/publishing; one JSONB geometry document per floor
+- **Units:** store inches only; feet/inches formatting is display-only (US units for now)
+- **Performance:** drag/resize/snap against local state; debounced async autosave; never block interaction on a server round trip
+
+## Development approach
+
+- Do only what the current task asks; do not build ahead into future phases
+- Do not refactor unrelated parts without being asked
+- Preserve working functionality; warn before risky changes
+- Warn before adding dependencies; prefer simple, readable solutions
+- No auth UI, dashboard, or editor until their phases ask for them

@@ -1,26 +1,98 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------------------
+   Swift Plans design tokens
+   Modern, minimal, spacious SaaS/productivity aesthetic.
+   Avoid dense CAD chrome, tiny icon grids, and decorative clutter.
+   --------------------------------------------------------------------------- */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Surfaces */
+  --sp-bg: #f4f6f8;
+  --sp-bg-elevated: #ffffff;
+  --sp-bg-muted: #e8edf2;
+
+  /* Ink */
+  --sp-fg: #0f1720;
+  --sp-fg-muted: #5b6b7c;
+  --sp-fg-subtle: #8a9aab;
+
+  /* Accent — clear action color, not purple */
+  --sp-accent: #0f6e56;
+  --sp-accent-hover: #0b5a46;
+  --sp-accent-fg: #ffffff;
+
+  /* Borders & focus */
+  --sp-border: #d5dde6;
+  --sp-border-strong: #b8c4d0;
+  --sp-focus: #0f6e56;
+
+  /* Status */
+  --sp-success: #0f6e56;
+  --sp-danger: #b42318;
+  --sp-warning: #b54708;
+
+  /* Radii */
+  --sp-radius-sm: 0.375rem;
+  --sp-radius-md: 0.5rem;
+  --sp-radius-lg: 0.75rem;
+
+  /* Spacing rhythm (used by components; Tailwind scale also available) */
+  --sp-space-1: 0.25rem;
+  --sp-space-2: 0.5rem;
+  --sp-space-3: 0.75rem;
+  --sp-space-4: 1rem;
+  --sp-space-6: 1.5rem;
+  --sp-space-8: 2rem;
+  --sp-space-12: 3rem;
+
+  /* Touch target minimum (iOS HIG) */
+  --sp-touch-min: 2.75rem; /* 44px */
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--sp-bg);
+  --color-foreground: var(--sp-fg);
+  --color-elevated: var(--sp-bg-elevated);
+  --color-muted: var(--sp-bg-muted);
+  --color-fg-muted: var(--sp-fg-muted);
+  --color-fg-subtle: var(--sp-fg-subtle);
+  --color-accent: var(--sp-accent);
+  --color-accent-hover: var(--sp-accent-hover);
+  --color-accent-fg: var(--sp-accent-fg);
+  --color-border: var(--sp-border);
+  --color-border-strong: var(--sp-border-strong);
+  --color-focus: var(--sp-focus);
+  --color-success: var(--sp-success);
+  --color-danger: var(--sp-danger);
+  --color-warning: var(--sp-warning);
+
+  --radius-sm: var(--sp-radius-sm);
+  --radius-md: var(--sp-radius-md);
+  --radius-lg: var(--sp-radius-lg);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100%;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #dce8e3 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #d9e3ef 0%, transparent 50%),
+    var(--sp-bg);
+  color: var(--sp-fg);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Prefer visible focus for keyboard users */
+:focus-visible {
+  outline: 2px solid var(--sp-focus);
+  outline-offset: 2px;
 }
