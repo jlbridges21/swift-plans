@@ -1,292 +1,194 @@
 import {
+  doorHingeAndLatch,
   doorSwingPaths,
   formatRoomDimensions,
+  openingEndpoints,
   pointsToPath,
   polygonAreaSqIn,
-  polygonCentroid,
+  ringsToPath,
+  roomLongAxisDegrees,
   sqInToSqFt,
   wallPolygonFromCenterline,
   windowPaneLines,
 } from "@/components/plan/geometry";
 import {
-  sampleDoors,
-  sampleFootprintOuter,
-  samplePlanMeta,
-  sampleRooms,
-  sampleWalls,
-  sampleWindows,
-} from "@/components/plan/sample-plan";
-import {
+  PLAN_FONT_FAMILY,
+  floorTextureForRoomType,
   planTokens,
-  ROOM_TYPE_CATEGORY,
-  type RoomCategory,
 } from "@/lib/plan-style/tokens";
-
-export type PlanVariantId = "minimal" | "warm" | "textured";
-
-type PlanVariantStyle = {
-  id: PlanVariantId;
-  paper: string;
-  ink: string;
-  inkMuted: string;
-  inkSubtle: string;
-  fills: Record<RoomCategory, string>;
-  showShadow: boolean;
-  showHatch: boolean;
-  wallInk: string;
-  labelWeight: number;
-};
-
-const variants: Record<PlanVariantId, PlanVariantStyle> = {
-  minimal: {
-    id: "minimal",
-    paper: "#fbfaf7",
-    ink: "#2a2824",
-    inkMuted: "#6a655c",
-    inkSubtle: "#9a9488",
-    fills: {
-      living: "rgba(42, 40, 36, 0.015)",
-      wet: "rgba(42, 40, 36, 0.03)",
-      service: "rgba(42, 40, 36, 0.02)",
-    },
-    showShadow: false,
-    showHatch: false,
-    wallInk: "#2a2824",
-    labelWeight: 500,
-  },
-  warm: {
-    id: "warm",
-    paper: planTokens.paper,
-    ink: planTokens.ink,
-    inkMuted: planTokens.inkMuted,
-    inkSubtle: planTokens.inkSubtle,
-    fills: { ...planTokens.fill },
-    showShadow: true,
-    showHatch: false,
-    wallInk: planTokens.ink,
-    labelWeight: 600,
-  },
-  textured: {
-    id: "textured",
-    paper: "#f5f0e6",
-    ink: "#2c2a26",
-    inkMuted: "#5c574e",
-    inkSubtle: "#8a8478",
-    fills: {
-      living: "rgba(44, 42, 38, 0.035)",
-      wet: "rgba(44, 42, 38, 0.065)",
-      service: "rgba(44, 42, 38, 0.05)",
-    },
-    showShadow: false,
-    showHatch: true,
-    wallInk: "#2c2a26",
-    labelWeight: 600,
-  },
-};
-
-function footprintOuterPath(): string {
-  return pointsToPath(sampleFootprintOuter, true);
-}
-
-function hatchPatternId(variant: PlanVariantId, category: RoomCategory): string {
-  return `hatch-${variant}-${category}`;
-}
+import type { FloorGeometry } from "@/types/plan-geometry";
 
 type PlanDrawingProps = {
-  variant: PlanVariantId;
+  geometry: FloorGeometry;
 };
 
-export function PlanDrawing({ variant }: PlanDrawingProps) {
-  const style = variants[variant];
+function wallById(geometry: FloorGeometry, wallId: string) {
+  const wall = geometry.walls.find((w) => w.id === wallId);
+  if (!wall) {
+    throw new Error(`Unknown wall id: ${wallId}`);
+  }
+  return wall;
+}
+
+export function PlanDrawing({ geometry }: PlanDrawingProps) {
   const margin = planTokens.sheetMargin;
-  const { bounds } = samplePlanMeta;
+  const { bounds, title } = geometry.meta;
   const viewMinX = bounds.minX - margin;
   const viewMinY = bounds.minY - margin;
   const viewW = bounds.maxX - bounds.minX + margin * 2;
   const viewH = bounds.maxY - bounds.minY + margin * 2;
 
-  const livingRooms = sampleRooms.filter((r) => r.type !== "garage");
+  const livingRooms = geometry.rooms.filter((r) => r.type !== "garage");
   const totalLivingSqFt = livingRooms.reduce(
     (sum, room) => sum + sqInToSqFt(polygonAreaSqIn(room.polygon)),
     0,
+  );
+
+  const texturedRooms = geometry.rooms.filter(
+    (room) => floorTextureForRoomType(room.type) !== "none",
   );
 
   return (
     <svg
       viewBox={`${viewMinX} ${viewMinY} ${viewW} ${viewH}`}
       role="img"
-      aria-label={`${samplePlanMeta.title} — ${variant} style`}
+      aria-label={title}
       style={{
         width: "100%",
         height: "auto",
         display: "block",
-        background: style.paper,
+        background: planTokens.paper,
       }}
     >
       <defs>
-        {style.showHatch ? (
-          <>
+        {texturedRooms.map((room) => {
+          const texture = floorTextureForRoomType(room.type);
+          if (texture === "plank") {
+            const spacing = planTokens.plankSpacing;
+            const rotation = roomLongAxisDegrees(room.polygon);
+            return (
+              <pattern
+                key={`tex-${room.id}`}
+                id={`tex-${room.id}`}
+                width={spacing}
+                height={spacing}
+                patternUnits="userSpaceOnUse"
+                patternTransform={`rotate(${rotation})`}
+              >
+                <line
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2={spacing}
+                  stroke={planTokens.ink}
+                  strokeWidth={planTokens.stroke.annotation}
+                  opacity={planTokens.textureOpacity}
+                />
+              </pattern>
+            );
+          }
+          const spacing = planTokens.tileSpacing;
+          return (
             <pattern
-              id={hatchPatternId(variant, "living")}
-              width="18"
-              height="18"
-              patternUnits="userSpaceOnUse"
-              patternTransform="rotate(12)"
-            >
-              <line
-                x1="0"
-                y1="0"
-                x2="0"
-                y2="18"
-                stroke={style.ink}
-                strokeWidth={planTokens.stroke.annotation}
-                opacity={planTokens.hatchOpacity * 12}
-              />
-            </pattern>
-            <pattern
-              id={hatchPatternId(variant, "wet")}
-              width="14"
-              height="14"
+              key={`tex-${room.id}`}
+              id={`tex-${room.id}`}
+              width={spacing}
+              height={spacing}
               patternUnits="userSpaceOnUse"
             >
               <path
-                d="M 0 7 H 14 M 7 0 V 14"
+                d={`M 0 ${spacing / 2} H ${spacing} M ${spacing / 2} 0 V ${spacing}`}
                 fill="none"
-                stroke={style.ink}
+                stroke={planTokens.ink}
                 strokeWidth={planTokens.stroke.annotation}
-                opacity={planTokens.hatchOpacity * 14}
+                opacity={planTokens.textureOpacity}
               />
             </pattern>
-            <pattern
-              id={hatchPatternId(variant, "service")}
-              width="16"
-              height="16"
-              patternUnits="userSpaceOnUse"
-              patternTransform="rotate(-18)"
-            >
-              <line
-                x1="0"
-                y1="0"
-                x2="16"
-                y2="0"
-                stroke={style.ink}
-                strokeWidth={planTokens.stroke.annotation}
-                opacity={planTokens.hatchOpacity * 12}
-              />
-            </pattern>
-          </>
-        ) : null}
-
-        {style.showShadow ? (
-          <filter
-            id={`shadow-${variant}`}
-            x="-5%"
-            y="-5%"
-            width="120%"
-            height="120%"
-          >
-            <feDropShadow
-              dx="4"
-              dy="6"
-              stdDeviation="5"
-              floodColor={planTokens.footprintShadow}
-              floodOpacity="1"
-            />
-          </filter>
-        ) : null}
+          );
+        })}
       </defs>
 
-      {/* Paper ground */}
       <rect
         x={viewMinX}
         y={viewMinY}
         width={viewW}
         height={viewH}
-        fill={style.paper}
+        fill={planTokens.paper}
       />
 
-      {style.showShadow ? (
-        <path
-          d={footprintOuterPath()}
-          fill={style.paper}
-          filter={`url(#shadow-${variant})`}
-        />
-      ) : null}
-
-      {/* Room fills */}
-      {sampleRooms.map((room) => {
-        const category = ROOM_TYPE_CATEGORY[room.type];
-        return (
-          <g key={`fill-${room.id}`}>
+      {geometry.rooms.map((room) => (
+        <g key={`fill-${room.id}`}>
+          <path
+            d={pointsToPath(room.polygon)}
+            fill={planTokens.fill[room.category]}
+            stroke="none"
+          />
+          {floorTextureForRoomType(room.type) !== "none" ? (
             <path
               d={pointsToPath(room.polygon)}
-              fill={style.fills[category]}
+              fill={`url(#tex-${room.id})`}
               stroke="none"
             />
-            {style.showHatch ? (
-              <path
-                d={pointsToPath(room.polygon)}
-                fill={`url(#${hatchPatternId(variant, category)})`}
-                stroke="none"
-              />
-            ) : null}
-          </g>
-        );
-      })}
+          ) : null}
+        </g>
+      ))}
 
-      {/* Walls — filled mitered polygons; exterior drawn after interior so shell wins at edges */}
-      {sampleWalls
+      {geometry.walls
         .filter((w) => w.kind === "interior")
         .map((wall) => {
-          const poly = wallPolygonFromCenterline(
+          const fill = wallPolygonFromCenterline(
             wall.centerline,
-            samplePlanMeta.interiorThickness,
-            Boolean(wall.closed),
+            wall.thickness,
+            wall.closed,
           );
           return (
             <path
               key={wall.id}
-              d={pointsToPath(poly)}
-              fill={style.wallInk}
+              d={ringsToPath(fill.rings)}
+              fill={planTokens.ink}
+              fillRule="evenodd"
               stroke="none"
             />
           );
         })}
-      {sampleWalls
+      {geometry.walls
         .filter((w) => w.kind === "exterior")
         .map((wall) => {
-          const poly = wallPolygonFromCenterline(
+          const fill = wallPolygonFromCenterline(
             wall.centerline,
-            samplePlanMeta.exteriorThickness,
-            Boolean(wall.closed),
+            wall.thickness,
+            wall.closed,
           );
           return (
             <path
               key={wall.id}
-              d={pointsToPath(poly)}
-              fill={style.wallInk}
+              d={ringsToPath(fill.rings)}
+              fill={planTokens.ink}
+              fillRule="evenodd"
               stroke="none"
             />
           );
         })}
 
-      {/* Windows */}
-      {sampleWindows.map((win) => {
-        const thickness =
-          win.wallKind === "exterior"
-            ? samplePlanMeta.exteriorThickness
-            : samplePlanMeta.interiorThickness;
+      {geometry.windows.map((win) => {
+        const wall = wallById(geometry, win.wallId);
+        const { start, end } = openingEndpoints(
+          wall.centerline,
+          win.offset,
+          win.width,
+          wall.closed,
+        );
         const [a1, b1, a2, b2] = windowPaneLines(
-          win.a,
-          win.b,
-          thickness,
+          start,
+          end,
+          wall.thickness,
           planTokens.window.insetRatio,
         );
         return (
           <g
             key={win.id}
             fill="none"
-            stroke={style.ink}
+            stroke={planTokens.ink}
             strokeWidth={planTokens.window.stroke}
             strokeLinecap="square"
           >
@@ -296,48 +198,42 @@ export function PlanDrawing({ variant }: PlanDrawingProps) {
         );
       })}
 
-      {/* Doors */}
-      {sampleDoors.map((door) => {
-        const { leaf, arc } = doorSwingPaths(
-          door.hinge,
-          door.latch,
-          door.swingSide,
+      {geometry.doors.map((door) => {
+        const wall = wallById(geometry, door.wallId);
+        const { hinge, latch } = doorHingeAndLatch(
+          wall.centerline,
+          door.offset,
+          door.width,
+          door.hingeSide,
+          wall.closed,
         );
+        const { leaf, arc } = doorSwingPaths(hinge, latch, door.swingSide);
         return (
           <g
             key={door.id}
             fill="none"
-            stroke={style.ink}
+            stroke={planTokens.ink}
             strokeWidth={planTokens.doorSwing.stroke}
             strokeLinecap="round"
             strokeLinejoin="round"
           >
-            <path d={arc} />
-            <path d={leaf} />
-            {/* Opening throat — clear the wall visually with paper-colored butt */}
             <line
-              x1={door.hinge.x}
-              y1={door.hinge.y}
-              x2={door.latch.x}
-              y2={door.latch.y}
-              stroke={style.paper}
-              strokeWidth={
-                door.exterior
-                  ? samplePlanMeta.exteriorThickness * 0.85
-                  : samplePlanMeta.interiorThickness * 0.85
-              }
+              x1={hinge.x}
+              y1={hinge.y}
+              x2={latch.x}
+              y2={latch.y}
+              stroke={planTokens.paper}
+              strokeWidth={wall.thickness * 0.85}
               strokeLinecap="butt"
             />
-            {/* Redraw leaf/arc above the cut */}
             <path d={arc} />
             <path d={leaf} />
           </g>
         );
       })}
 
-      {/* Labels */}
-      {sampleRooms.map((room) => {
-        const at = room.labelAt ?? polygonCentroid(room.polygon);
+      {geometry.rooms.map((room) => {
+        const at = room.labelAnchor;
         const area = Math.round(sqInToSqFt(polygonAreaSqIn(room.polygon)));
         const dims = formatRoomDimensions(room.polygon);
         return (
@@ -346,14 +242,14 @@ export function PlanDrawing({ variant }: PlanDrawingProps) {
             x={at.x}
             y={at.y}
             textAnchor="middle"
-            fontFamily="var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif"
+            fontFamily={PLAN_FONT_FAMILY}
           >
             <tspan
               x={at.x}
               dy="0"
-              fill={style.inkMuted}
+              fill={planTokens.inkMuted}
               fontSize={planTokens.typography.labelSize}
-              fontWeight={style.labelWeight}
+              fontWeight={planTokens.typography.labelWeight}
               letterSpacing={planTokens.typography.labelLetterSpacing}
             >
               {room.name.toUpperCase()}
@@ -361,7 +257,7 @@ export function PlanDrawing({ variant }: PlanDrawingProps) {
             <tspan
               x={at.x}
               dy="16"
-              fill={style.inkSubtle}
+              fill={planTokens.inkSubtle}
               fontSize={planTokens.typography.dimensionSize}
               fontWeight={400}
               letterSpacing="0.04em"
@@ -371,7 +267,7 @@ export function PlanDrawing({ variant }: PlanDrawingProps) {
             <tspan
               x={at.x}
               dy="14"
-              fill={style.inkSubtle}
+              fill={planTokens.inkSubtle}
               fontSize={planTokens.typography.areaSize}
               fontWeight={400}
             >
@@ -381,12 +277,11 @@ export function PlanDrawing({ variant }: PlanDrawingProps) {
         );
       })}
 
-      {/* Total living area — considered placement below the sheet title area */}
       <text
         x={bounds.minX + margin * 0.15}
         y={bounds.maxY + margin * 0.55}
-        fontFamily="var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif"
-        fill={style.inkMuted}
+        fontFamily={PLAN_FONT_FAMILY}
+        fill={planTokens.inkMuted}
         fontSize={planTokens.typography.totalAreaSize}
         fontWeight={600}
         letterSpacing="0.08em"
@@ -396,24 +291,3 @@ export function PlanDrawing({ variant }: PlanDrawingProps) {
     </svg>
   );
 }
-
-export const planVariantCopy: Record<
-  PlanVariantId,
-  { title: string; intent: string }
-> = {
-  minimal: {
-    title: "Minimal editorial",
-    intent:
-      "Near-white ground, hairline presence, typography carries hierarchy — the plan as a quiet layout document.",
-  },
-  warm: {
-    title: "Warm architectural",
-    intent:
-      "Soft paper tone, tonal room fills, subtle footprint shadow, slightly heavier poché — classic realtor presentation.",
-  },
-  textured: {
-    title: "Textured",
-    intent:
-      "Category-aware floor hatching at very low opacity — tile grids in wet rooms, plank lines in living space — the most ‘designed’ reading.",
-  },
-};

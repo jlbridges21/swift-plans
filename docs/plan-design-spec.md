@@ -1,52 +1,30 @@
 # Plan design specification
 
 Visual target for Swift Plans exports and editor rendering. The reference
-renderings live at `/debug/plan-style`. Tokens live in
-`src/lib/plan-style/tokens.ts`.
+rendering lives at `/debug/plan-style`. Tokens live in
+`src/lib/plan-style/tokens.ts`. The typed geometry document is
+`src/types/plan-geometry.ts`.
 
-## Variants
+## Presentation style (single)
 
-### 1. Minimal editorial
+**Textured architectural** is the locked look:
 
-Near-white ground, almost no fill contrast, walls as solid charcoal poché,
-typography doing the hierarchical work. Reads like a layout document in an
-editorial real-estate magazine.
+- Warm off-white paper (`#f5f0e6`) and soft charcoal ink — never pure
+  black-on-white, never tied to app UI theme or `prefers-color-scheme`
+- Subtle tonal room fills by category (living / wet / service)
+- Floor texture at ~3.5% opacity, by room type:
+  - **Plank** (wide parallel lines, room long-axis): living room, dining,
+    bedroom, entry
+  - **Tile** (fine square grid): bathroom, kitchen, laundry
+  - **None**: garage, closet, hallway
+- Total living area as a typographic footer element (garage excluded)
 
-**Strengths:** calm, scales well in dense MLS grids, easiest to brand later by
-adding a logo without fighting color.
-**Weaknesses:** can feel cold or unfinished if labels are weak; little
-differentiation between room types at a glance.
+Closed exterior walls are filled as **separate outer/inner SVG subpaths** with
+`fill-rule="evenodd"`. A single concatenated subpath drops the wrap-around
+segment (the bug that erased the west wall in Phase 1.5a).
 
-### 2. Warm architectural
-
-Warm off-white paper, tonal room fills, slightly heavier visual weight, soft
-footprint shadow. Closest to a classic high-end realtor presentation plan.
-
-**Strengths:** immediately “professional floor plan”; shadow lifts the
-footprint off the sheet; tonal fills guide the eye without rainbow kitsch.
-**Weaknesses:** shadow is a presentation effect (easy in SVG, must be optional
-in export settings); slightly more ink on the page.
-
-### 3. Textured (recommended)
-
-Same warm paper and tonal fills as the architectural direction, plus
-category-aware floor hatching at very low opacity: plank lines in living
-space, a light tile grid in wet rooms, angled service hatch in garage/closet.
-
-**Strengths:** most distinctly *designed*; hatch communicates room type before
-you read the label; still monochrome and MLS-safe; survives reduction to phone
-width better than color coding.
-**Weaknesses:** hatch must be clipped to room polygons and stay ≤ ~5% opacity
-or it turns noisy; more draw calls; hatch patterns must export cleanly into
-standalone SVG.
-
-### Recommendation
-
-**Ship Textured as the default presentation style**, with Minimal and Warm
-available as presentation presets later (Phase 7). Textured is the only
-direction that feels ownable without introducing chromatic room colors (which
-age poorly and fight photography-adjacent branding). Warm is the fallback if
-hatch proves costly on mobile; Minimal is the unbranded/MLS-safe extreme.
+Plan SVG text uses a **literal** `PLAN_FONT_FAMILY` stack — no CSS custom
+properties inside the SVG, so serialized exports do not silently fall back.
 
 ---
 
@@ -55,173 +33,138 @@ hatch proves costly on mobile; Minimal is the unbranded/MLS-safe extreme.
 | Token | Intent |
 | --- | --- |
 | `paper` | Document ground — warm off-white; never pure white; independent of app theme |
-| `ink` | Primary structure fill/stroke — soft charcoal; never `#000` |
-| `inkMuted` | Room labels |
-| `inkSubtle` | Dimensions and secondary annotations |
-| `stroke.emphasis` | Rare heavy annotation (north arrow, etc.) |
-| `stroke.fixture` | Door leaf, window panes, stair treads |
-| `stroke.annotation` | Dimension ticks, hatch lines |
+| `ink` / `inkMuted` / `inkSubtle` | Structure / labels / dimensions |
+| `stroke.emphasis` / `fixture` / `annotation` | Named stroke hierarchy for symbols |
 | `wallExterior` / `wallInterior` | Filled wall thicknesses in drawing inches |
 | `fill.living` / `wet` / `service` | Tonal room fills by category |
-| `hatchOpacity` | Cap for textured hatch so it stays atmospheric |
-| `footprintShadow` | Warm-variant lift only |
+| `textureOpacity` | ~3–4% floor texture; do not multiply up |
+| `plankSpacing` / `tileSpacing` | Material pattern scale |
 | `typography.*` | Label / dimension / area sizes and tracking |
 | `sheetMargin` | Breathing room around the footprint in the viewBox |
 | `doorSwing.stroke` / `window.*` | Symbol line weights and window inset ratio |
+| `PLAN_FONT_FAMILY` | Literal font stack for export-safe SVG text |
 
-**Drawing space:** 1 SVG user unit = **1 inch**. Stored measurements are inches;
-the drawing space uses the same numeric unit 1:1. Feet/inches strings are
-display formatting only.
-
-**Plan colors never follow `prefers-color-scheme` or `--sp-*` app tokens.**
-
-Room type → category mapping is in `ROOM_TYPE_CATEGORY` inside the tokens file
-(living / wet / service).
+**Drawing space:** 1 SVG user unit = **1 inch** (1:1 with stored measurements).
 
 ---
 
-## Geometry requirements
+## Geometry document schema (`FloorGeometry`)
 
-This section is the contract for Phase 2 schema design. Everything below must
-exist in structured data for the reference look to be reproducible from real
-plans.
+Source of truth: `src/types/plan-geometry.ts`. The sample plan is a typed
+instance (`sampleFloorGeometry`). `PlanDrawing` renders only from a
+`geometry` prop.
 
-### Walls
+### Root
 
-For each wall segment (or continuous wall run):
+| Field | Why the renderer needs it |
+| --- | --- |
+| `schemaVersion` | Evolve the JSONB format without a hard cutover |
+| `meta.title` | Accessible label / sheet title |
+| `meta.bounds` | viewBox and sheet framing before margin |
 
-- **Centerline polyline** — ordered vertices in inches (`{x,y}[]`)
-- **Thickness** — inches (or a kind that maps to exterior/interior defaults)
-- **`kind`: `exterior` | `interior`** — drives thickness and visual weight
-- **Open vs closed** — exterior shell is typically one closed loop; interior
-  partitions are open runs that terminate on other walls
-- **Shared-wall / T-junction identity** (later) — which walls meet at which
-  vertex, so joins can be resolved without double-poché or gaps
+### `walls[]`
 
-Rendering consumes a **mitered filled polygon** derived from centerline +
-thickness. Stroked centerlines are not acceptable for presentation.
+| Field | Why |
+| --- | --- |
+| `id` | Stable reference for doors/windows/openings |
+| `centerline` | Source polyline for mitered filled poché |
+| `thickness` | Outer/inner offset distance |
+| `kind` | Exterior vs interior visual weight (and default thickness) |
+| `closed` | Closed shell uses two rings + evenodd; open runs use a strip ring |
 
-### Rooms
+**Not yet modeled (Phase 2 hard cases):** shared-wall identity between two
+rooms, and T-junction vertex graphs. Walls are independent centerlines today;
+joins overdraw. Phase 2 should add adjacency/junctions without breaking `id` +
+centerline attachments.
 
-- **Polygon** — ordered interior-face vertices (the floor area), not a
-  width×height rectangle type
-- **Category** (or room `type` mappable to living/wet/service)
-- **Label string**
-- **Label anchor** `{x,y}` — optional override; default centroid is often wrong
-  for L-shapes and should be authorable
-- **Display dimensions** — either stored or derived from polygon bounds /
-  measuring edges; format `12' 6" × 10' 0"`
-- **Area** — derived from polygon (shoelace) in sq in → sq ft; do not store as
-  the only source of truth if the polygon can change
+### `rooms[]`
 
-### Doors
+| Field | Why |
+| --- | --- |
+| `id` | Stable identity |
+| `name` | Uppercase label text |
+| `type` | Drives floor texture (plank / tile / none) |
+| `category` | Drives tonal fill |
+| `polygon` | Floor fill + area (shoelace) + AABB dimensions |
+| `labelAnchor` | Placed label; centroids fail on L-shapes |
 
-- **Host wall id** (or geometric attachment to a wall segment)
-- **Offset along wall** and **opening width** (inches), *or* explicit hinge +
-  latch points
-- **Hinge side** — which end of the opening is the hinge
-- **Swing direction / swing side** — which side of the wall the leaf arcs into
-  (into which room). Required for a correct quarter-circle arc + leaf line
-- **`exterior` flag** — entry doors vs interior doors (opening cut width /
-  symbol weight)
+### `doors[]`
 
-### Windows
+| Field | Why |
+| --- | --- |
+| `id` | Stable identity |
+| `wallId` | Host wall for opening placement |
+| `offset` | Distance along wall centerline to opening start |
+| `width` | Opening width (= swing arc radius) |
+| `hingeSide` | Which end of the opening is the hinge (`start` \| `end`) |
+| `swingSide` | Which side of the wall the leaf arcs into (`1` \| `-1`) |
+| `exterior` | Entry vs interior (opening cut weight) |
 
-- **Host wall id**
-- **Offset along wall** and **width**
-- **Wall thickness context** — so parallel pane lines inset correctly into the
-  wall body
+### `windows[]`
 
-### Sheet / presentation
+| Field | Why |
+| --- | --- |
+| `id` | Stable identity |
+| `wallId` | Host wall |
+| `offset` / `width` | Opening along centerline |
+| (thickness from wall) | Parallel pane lines inset into the wall body |
 
-- Bounding box of geometry
-- Sheet margin
-- Optional presentation preset (`minimal` | `warm` | `textured`)
-- Total living area = sum of room areas excluding garage (product rule to
-  confirm), placed as a typographic element — not a random corner stamp
+### `openings[]`
+
+Cased openings without a door leaf — same attachment fields as windows
+(`wallId`, `offset`, `width`). Empty in the sample.
+
+### `stairs[]`
+
+| Field | Why |
+| --- | --- |
+| `id` | Stable identity |
+| `polygon` | Stair run / well outline |
+| `direction` | Ascent direction for tread symbol orientation |
+
+Empty in the sample (single-story reference).
+
+### `labels[]`
+
+Free-floating annotations (`note` \| `dimension` \| `area`) not tied to a room
+centroid. Empty in the sample (room labels come from `rooms[]`).
 
 ### Units
 
 - All geometry in **inches**
 - Drawing space inches == stored inches (1:1)
-- Formatting to feet/inches only at display/export text time
+- Feet/inches formatting only at display/export text time
+
+---
+
+## Geometry checks
+
+`npm run check:plan-geometry` runs computable assertions (wall coverage
+including closed wrap-around, room centroids outside walls, door radius/width,
+area sanity, finite coordinates). Phases 2–4 should extend this script rather
+than relying on visual self-assessment.
 
 ---
 
 ## Hand-faked / hard-later notes
 
-Be honest about what the static reference cheats on:
-
-1. **T-junctions and wall end caps** — Interior runs are butt-capped and simply
-   overdraw where they meet the shell. A real solver must clip or miter wall
-   ends into the host wall so poché doesn’t double up or leave hairline gaps.
-   This is the hardest Phase 2/7 rendering problem.
-
-2. **Door openings cutting walls** — The reference “cuts” an opening by
-   painting a paper-colored stroke over the wall, then redrawing the swing.
-   Production rendering should boolean-subtract the opening from the wall
-   polygon (or break the wall into two runs) so exports don’t rely on
-   paint-order tricks.
-
-3. **Label anchors on L-shapes** — Centroids of concave polygons can fall
-   outside the room or on a wall. The sample plan hand-places anchors. Schema
-   needs an optional label point; auto-placement is a later heuristic.
-
-4. **Dimension strings** — Sample uses axis-aligned bounding-box width×depth.
-   Real rooms (especially L-shapes and angled walls) need either measured wall
-   lengths or authored dimension annotations. BBB is a stopgap, not the product.
-
-5. **Shared house/garage wall** — Drawn as an extra exterior-weight segment
-   that meets the shell at a T. Automatic envelope extraction from a wall graph
-   must mark fire/garage separations explicitly.
-
-6. **SVG filters (`feDropShadow`)** — Used only in the warm variant. Fine for
-   on-screen reference; export pipelines should treat shadow as an optional
-   post-effect (or bake it) because some SVG→PDF/PNG paths handle filters
-   inconsistently.
-
-7. **Fonts in exported SVG** — Reference uses Geist via the app’s CSS variable.
-   A standalone `.svg` emailed to a client will fall back unless we subset/embed
-   the font or convert labels to paths (Phase 8). See font recommendation below.
-
-8. **Hatch patterns** — Implemented as SVG `<pattern>`. Cheap here; must remain
-   clipped to room polygons and stay very light. Changing room polygons must
-   not require re-authoring hatch.
+1. **T-junctions and wall end caps** — Interior runs butt-cap and overdraw the
+   shell. A real solver must clip/miter ends into the host wall.
+2. **Door openings cutting walls** — Paper-colored stroke over the wall, then
+   redraw swing. Production should boolean-subtract or split the wall run.
+3. **Label anchors** — Hand-placed for L-shapes; auto-placement is later.
+4. **Dimension strings** — AABB width×depth stopgap, not measured wall lengths.
+5. **Shared house/garage wall** — Extra exterior-weight segment at a T.
+6. **Fonts in exported SVG** — Literal system stack for now; Phase 8 must
+   embed a subset or convert text to paths (see recommendation below).
+7. **Hatch patterns** — SVG `<pattern>` clipped to room polygons at ~3.5%
+   opacity.
 
 ---
 
 ## Font recommendation (do not install in this phase)
 
-**Recommendation: [IBM Plex Sans](https://github.com/IBM/plex)** for plan
-labels (and a slightly tighter weight for dimensions).
-
-**Why**
-
-- Geometric enough to read as “architectural” at small sizes and wide tracking
-- Excellent numerals for dimensions (`12' 6"`)
-- SIL Open Font License — free to self-host, subset, and embed in exports
-- Distinct from generic Inter/system UI faces without requiring a paid license
-  for every exported file
-
-**Licensing / self-hosting**
-
-- OFL-1.1: embeddable in documents and SVG; keep license notice with the font
-  files
-- Self-host WOFF2 subsets (uppercase + figures + punctuation is enough for
-  plans) to keep export payloads small
-
-**Phase 8 consequence**
-
-Exported SVG/PDF/PNG must either:
-
-1. Embed a subset of the face, or
-2. Convert label text to paths at export time
-
-Otherwise recipients see fallback fonts and tracking/metrics shift. Geist is
-acceptable for in-app reference only until that pipeline exists; do not assume
-Geist’s license/distribution model covers every white-label export without
-checking.
-
-**Alternate:** keep Geist if Vercel’s license covers our export embedding needs
-after legal review — but IBM Plex Sans is the safer default for a product whose
-*output file* leaves our domain.
+**Recommendation: [IBM Plex Sans](https://github.com/IBM/plex)** (SIL OFL),
+self-hosted and subset for exports. Until Phase 8, the reference SVG uses
+`PLAN_FONT_FAMILY` (system UI stack) so serialized files do not depend on
+unresolved CSS variables.

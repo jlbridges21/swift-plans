@@ -11,6 +11,8 @@
 
 export type RoomCategory = "living" | "wet" | "service";
 
+export type FloorTexture = "plank" | "tile" | "none";
+
 /** Map common room types → tonal fill category. */
 export const ROOM_TYPE_CATEGORY = {
   living_room: "living",
@@ -27,9 +29,35 @@ export const ROOM_TYPE_CATEGORY = {
 
 export type RoomType = keyof typeof ROOM_TYPE_CATEGORY;
 
+/** Floor material hatch — separate from tonal fill category. */
+export function floorTextureForRoomType(type: RoomType): FloorTexture {
+  switch (type) {
+    case "living_room":
+    case "dining_room":
+    case "bedroom":
+    case "entry":
+      return "plank";
+    case "bathroom":
+    case "kitchen":
+    case "laundry":
+      return "tile";
+    case "garage":
+    case "closet":
+    case "hallway":
+      return "none";
+  }
+}
+
+/**
+ * Literal font stack for plan SVG text.
+ * Must NOT use CSS custom properties — exports serialize these attributes as-is.
+ */
+export const PLAN_FONT_FAMILY =
+  "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+
 export const planTokens = {
   /** Sheet / export ground — warm off-white, never pure white. */
-  paper: "#f7f3ec",
+  paper: "#f5f0e6",
 
   /** Soft charcoal ink for walls and primary structure — never pure black. */
   ink: "#2c2a26",
@@ -42,8 +70,7 @@ export const planTokens = {
 
   /**
    * Stroke hierarchy (named so weight intent stays obvious in code):
-   * wallOutline < fixtureSymbol would be wrong — walls are FILLED polygons;
-   * these strokes are for symbols and annotations only.
+   * walls are FILLED polygons; these strokes are for symbols and annotations.
    */
   stroke: {
     /** Heaviest non-fill line — reserved for rare emphasis (north arrow, etc.). */
@@ -61,21 +88,27 @@ export const planTokens = {
 
   /** Room fills — tonal warm greys, very low contrast against paper. */
   fill: {
-    living: "rgba(44, 42, 38, 0.04)",
-    wet: "rgba(44, 42, 38, 0.07)",
-    service: "rgba(44, 42, 38, 0.055)",
+    living: "rgba(44, 42, 38, 0.035)",
+    wet: "rgba(44, 42, 38, 0.065)",
+    service: "rgba(44, 42, 38, 0.05)",
   },
 
-  /** Hatch opacity for the textured variant (tile / plank lines). */
-  hatchOpacity: 0.045,
+  /**
+   * Floor texture stroke opacity (~3–4%). Reads as flooring, not a loud hatch.
+   * Applied directly to pattern strokes — do not multiply up.
+   */
+  textureOpacity: 0.035,
 
-  /** Soft footprint shadow (warm architectural variant only). */
-  footprintShadow: "rgba(44, 42, 38, 0.10)",
+  /** Plank spacing in drawing inches (wide). */
+  plankSpacing: 22,
+  /** Tile grid spacing in drawing inches (finer). */
+  tileSpacing: 14,
 
   typography: {
     /** Room name — geometric sans, uppercase, tracked. */
     labelSize: 16,
     labelLetterSpacing: "0.1em",
+    labelWeight: 600,
     /** Dimension line under the label (e.g. 12' 6" × 10' 0"). */
     dimensionSize: 12,
     /** Room area and total floor area. */
