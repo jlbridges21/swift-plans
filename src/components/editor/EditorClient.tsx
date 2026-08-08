@@ -12,9 +12,21 @@ import {
   RoomSheet,
   type RoomSheetMode,
 } from "@/components/editor/RoomSheet";
+import { RoomTypePicker } from "@/components/editor/RoomTypePicker";
 import { RenameProjectForm } from "@/components/projects/ProjectManageForms";
 import { Button } from "@/components/ui/Button";
 import { saveFloorGeometry } from "@/lib/plan/actions";
+import {
+  canRedo,
+  canUndo,
+  createGeometryHistory,
+  historyCommitGesture,
+  historyPush,
+  historyRedo,
+  historyReplacePresent,
+  historyUndo,
+  type GeometryHistory,
+} from "@/lib/plan/history";
 import {
   addDoorOnWall,
   addOpeningOnWall,
@@ -30,19 +42,24 @@ import {
   flipDoorSwing,
   migrateGeometry,
   moveOpening,
+  resetRoomLabelAnchor,
   resizeRoom,
   resizeStairs,
   roomSizeInches,
   rotateStairs,
   setOpeningWidth,
+  setRoomLabelAnchor,
+  setRoomName,
+  setRoomType,
   toggleStairsDirection,
   translateRoom,
   translateStairs,
 } from "@/lib/plan/room-ops";
 import { exteriorWallFloorSpan } from "@/lib/plan/derive-walls";
 import { listOpenings } from "@/lib/plan/openings";
+import { normalizeRoomType } from "@/lib/plan/room-types";
 import { formatMeasure, parseMeasure } from "@/lib/measure";
-import type { FloorGeometry } from "@/types/plan-geometry";
+import type { FloorGeometry, PlanPoint } from "@/types/plan-geometry";
 
 export type SaveStatus =
   | "saved"
@@ -91,7 +108,10 @@ export function EditorClient({
   initialGeometry,
 }: EditorClientProps) {
   const migrated = migrateGeometry(initialGeometry);
-  const [geometry, setGeometry] = useState<FloorGeometry>(migrated.geometry);
+  const [history, setHistory] = useState<GeometryHistory>(() =>
+    createGeometryHistory(migrated.geometry),
+  );
+  const geometry = history.present;
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
   const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(
@@ -99,12 +119,13 @@ export function EditorClient({
   );
   const [selectedStairsId, setSelectedStairsId] = useState<string | null>(null);
   const [sheet, setSheet] = useState<RoomSheetMode | null>(null);
+  const [typePickerOpen, setTypePickerOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [interacting, setInteracting] = useState(false);
   const [typing, setTyping] = useState(false);
   const needsMigrationSave = useRef(migrated.didMigrate);
 
-  const geometryRef = useRef(geometry);
+  const historyRef = useRef(history);
   const dirtyRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(1000);
@@ -114,10 +135,11 @@ export function EditorClient({
   const interactingRef = useRef(false);
   const typingRef = useRef(false);
   const performSaveRef = useRef<() => Promise<void>>(async () => {});
+  const gestureBaselineRef = useRef<FloorGeometry | null>(null);
 
   useEffect(() => {
-    geometryRef.current = geometry;
-  }, [geometry]);
+    historyRef.current = history;
+  }, [history]);
 
   useEffect(() => {
     interactingRef.current = interacting;
@@ -154,12 +176,12 @@ export function EditorClient({
 
     saveInFlightRef.current = true;
     setSaveStatus(failCountRef.current > 0 ? "error-retrying" : "saving");
-    const snapshot = geometryRef.current;
+    const snapshot = historyRef.current.present;
 
     try {
       const result = await saveFloorGeometry(floorId, snapshot);
       if (result.ok) {
-        if (geometryRef.current === snapshot) {
+        if (historyRef.current.present === snapshot) {
           dirtyRef.current = false;
         }
         failCountRef.current = 0;
@@ -228,23 +250,40 @@ export function EditorClient({
     return () => clearSaveTimer();
   }, [clearSaveTimer]);
 
-  const mutateGeometry = useCallback(
+  /** Discrete document action — one undo step. */
+  const commitGeometry = useCallback(
     (next: FloorGeometry) => {
-      setGeometry(next);
+      setHistory((h) => historyPush(h, next));
       scheduleSave();
     },
     [scheduleSave],
   );
 
+  const handleDocumentGestureStart = useCallback(() => {
+    gestureBaselineRef.current = historyRef.current.present;
+  }, []);
+
+  const handleDocumentGestureEnd = useCallback(() => {
+    const baseline = gestureBaselineRef.current;
+    gestureBaselineRef.current = null;
+    if (!baseline) return;
+    setHistory((h) => historyCommitGesture(h, baseline));
+    scheduleSave();
+  }, [scheduleSave]);
+
   const handleMoveRoom = useCallback((roomId: string, dx: number, dy: number) => {
     dirtyRef.current = true;
-    setGeometry((prev) => translateRoom(prev, roomId, dx, dy));
+    setHistory((h) =>
+      historyReplacePresent(h, translateRoom(h.present, roomId, dx, dy)),
+    );
   }, []);
 
   const handleMoveOpening = useCallback(
     (openingId: string, offsetIn: number) => {
       dirtyRef.current = true;
-      setGeometry((prev) => moveOpening(prev, openingId, offsetIn));
+      setHistory((h) =>
+        historyReplacePresent(h, moveOpening(h.present, openingId, offsetIn)),
+      );
     },
     [],
   );
@@ -252,10 +291,19 @@ export function EditorClient({
   const handleMoveStairs = useCallback(
     (stairsId: string, dx: number, dy: number) => {
       dirtyRef.current = true;
-      setGeometry((prev) => translateStairs(prev, stairsId, dx, dy));
+      setHistory((h) =>
+        historyReplacePresent(h, translateStairs(h.present, stairsId, dx, dy)),
+      );
     },
     [],
   );
+
+  const handleMoveLabel = useCallback((roomId: string, at: PlanPoint) => {
+    dirtyRef.current = true;
+    setHistory((h) =>
+      historyReplacePresent(h, setRoomLabelAnchor(h.present, roomId, at)),
+    );
+  }, []);
 
   const handleInteractionChange = useCallback((active: boolean) => {
     setInteracting(active);
@@ -263,6 +311,35 @@ export function EditorClient({
       setSaveStatus("dirty");
     }
   }, []);
+
+  const handleUndo = useCallback(() => {
+    if (!canUndo(historyRef.current)) return;
+    setHistory((h) => historyUndo(h));
+    dirtyRef.current = true;
+    setSaveStatus("dirty");
+    scheduleSave();
+  }, [scheduleSave]);
+
+  const handleRedo = useCallback(() => {
+    if (!canRedo(historyRef.current)) return;
+    setHistory((h) => historyRedo(h));
+    dirtyRef.current = true;
+    setSaveStatus("dirty");
+    scheduleSave();
+  }, [scheduleSave]);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (typingRef.current || sheet || typePickerOpen) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || e.key.toLowerCase() !== "z") return;
+      e.preventDefault();
+      if (e.shiftKey) handleRedo();
+      else handleUndo();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleRedo, handleUndo, sheet, typePickerOpen]);
 
   const selectedRoom = geometry.rooms.find((r) => r.id === selectedRoomId);
   const selectedWall = geometry.walls.find((w) => w.id === selectedWallId);
@@ -278,6 +355,7 @@ export function EditorClient({
     setSelectedWallId(null);
     setSelectedOpeningId(null);
     setSelectedStairsId(null);
+    setTypePickerOpen(false);
   }
 
   const openEditSheet = useCallback(() => {
@@ -314,6 +392,9 @@ export function EditorClient({
           ? `edit-${sheet.roomId}`
           : "none";
 
+  const undoEnabled = canUndo(history);
+  const redoEnabled = canRedo(history);
+
   return (
     <div className="flex w-full flex-1 flex-col">
       <div className="border-b border-border bg-elevated">
@@ -349,7 +430,7 @@ export function EditorClient({
         </div>
       </div>
 
-      <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-4 px-5 py-4 sm:px-8">
+      <div className="mx-auto flex w-full flex-1 flex-col gap-4 px-5 py-4 sm:px-8 max-w-6xl">
         {floors.length > 1 ? (
           <div className="flex flex-wrap gap-2" aria-label="Floors">
             {floors.map((floor) => (
@@ -388,10 +469,28 @@ export function EditorClient({
             variant="secondary"
             onClick={() => {
               clearSelection();
-              mutateGeometry(addStairs(geometry));
+              commitGeometry(addStairs(geometry));
             }}
           >
             Add Stairs
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={!undoEnabled}
+            onClick={handleUndo}
+            aria-label="Undo"
+          >
+            Undo
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={!redoEnabled}
+            onClick={handleRedo}
+            aria-label="Redo"
+          >
+            Redo
           </Button>
           {selectedRoom ? (
             <Button type="button" variant="secondary" onClick={openEditSheet}>
@@ -418,6 +517,8 @@ export function EditorClient({
                 setSelectedWallId(null);
                 setSelectedOpeningId(null);
                 setSelectedStairsId(null);
+              } else {
+                setTypePickerOpen(false);
               }
               if (!id && sheet?.kind === "edit") setSheet(null);
             }}
@@ -427,6 +528,7 @@ export function EditorClient({
                 setSelectedRoomId(null);
                 setSelectedOpeningId(null);
                 setSelectedStairsId(null);
+                setTypePickerOpen(false);
               }
             }}
             onSelectOpening={(id) => {
@@ -435,6 +537,7 @@ export function EditorClient({
                 setSelectedRoomId(null);
                 setSelectedWallId(null);
                 setSelectedStairsId(null);
+                setTypePickerOpen(false);
               }
             }}
             onSelectStairs={(id) => {
@@ -443,11 +546,15 @@ export function EditorClient({
                 setSelectedRoomId(null);
                 setSelectedWallId(null);
                 setSelectedOpeningId(null);
+                setTypePickerOpen(false);
               }
             }}
             onMoveRoom={handleMoveRoom}
             onMoveOpening={handleMoveOpening}
             onMoveStairs={handleMoveStairs}
+            onMoveLabel={handleMoveLabel}
+            onDocumentGestureStart={handleDocumentGestureStart}
+            onDocumentGestureEnd={handleDocumentGestureEnd}
             onInteractionChange={handleInteractionChange}
           />
         </div>
@@ -467,22 +574,58 @@ export function EditorClient({
                 return `${Math.round((s.width * s.depth) / 144)} sq ft`;
               })()}
             </p>
+            <Button
+              type="button"
+              className="w-full"
+              onClick={() => setTypePickerOpen(true)}
+            >
+              Room type
+            </Button>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium text-navy">Custom name</span>
+              <input
+                className="min-h-[var(--sp-touch-min)] rounded-sm border border-border px-3 text-base"
+                defaultValue={selectedRoom.name}
+                key={`name-${selectedRoom.id}-${selectedRoom.name}`}
+                onFocus={() => setTyping(true)}
+                onBlur={(e) => {
+                  setTyping(false);
+                  const next = e.target.value.trim();
+                  if (next && next !== selectedRoom.name) {
+                    commitGeometry(setRoomName(geometry, selectedRoom.id, next));
+                  }
+                }}
+              />
+            </label>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button type="button" className="w-full" onClick={openEditSheet}>
                 Edit size
               </Button>
               <Button
                 type="button"
-                variant="ghost"
-                className="w-full text-danger hover:bg-danger/5"
-                onClick={() => {
-                  mutateGeometry(deleteRoom(geometry, selectedRoom.id));
-                  setSelectedRoomId(null);
-                }}
+                variant="secondary"
+                className="w-full"
+                onClick={() =>
+                  commitGeometry(
+                    resetRoomLabelAnchor(geometry, selectedRoom.id),
+                  )
+                }
               >
-                Delete
+                Reset label
               </Button>
             </div>
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full text-danger hover:bg-danger/5"
+              onClick={() => {
+                commitGeometry(deleteRoom(geometry, selectedRoom.id));
+                setSelectedRoomId(null);
+                setTypePickerOpen(false);
+              }}
+            >
+              Delete
+            </Button>
           </aside>
         ) : null}
 
@@ -502,7 +645,7 @@ export function EditorClient({
                 type="button"
                 className="w-full"
                 onClick={() => {
-                  mutateGeometry(addDoorOnWall(geometry, selectedWall.id));
+                  commitGeometry(addDoorOnWall(geometry, selectedWall.id));
                 }}
               >
                 Add Door
@@ -512,7 +655,7 @@ export function EditorClient({
                 variant="secondary"
                 className="w-full"
                 onClick={() => {
-                  mutateGeometry(addWindowOnWall(geometry, selectedWall.id));
+                  commitGeometry(addWindowOnWall(geometry, selectedWall.id));
                 }}
               >
                 Add Window
@@ -522,7 +665,7 @@ export function EditorClient({
                 variant="secondary"
                 className="w-full"
                 onClick={() => {
-                  mutateGeometry(addOpeningOnWall(geometry, selectedWall.id));
+                  commitGeometry(addOpeningOnWall(geometry, selectedWall.id));
                 }}
               >
                 Add Opening
@@ -569,10 +712,12 @@ export function EditorClient({
                 className="min-h-[var(--sp-touch-min)] rounded-sm border border-border px-3 text-base"
                 inputMode="decimal"
                 defaultValue={formatMeasure(selectedOpening.widthIn)}
+                onFocus={() => setTyping(true)}
                 onBlur={(e) => {
+                  setTyping(false);
                   const parsed = parseMeasure(e.target.value);
                   if (parsed.ok) {
-                    mutateGeometry(
+                    commitGeometry(
                       setOpeningWidth(
                         geometry,
                         selectedOpening.id,
@@ -590,7 +735,7 @@ export function EditorClient({
                   variant="secondary"
                   className="w-full"
                   onClick={() =>
-                    mutateGeometry(flipDoorSwing(geometry, selectedOpening.id))
+                    commitGeometry(flipDoorSwing(geometry, selectedOpening.id))
                   }
                 >
                   Flip swing
@@ -600,7 +745,7 @@ export function EditorClient({
                   variant="secondary"
                   className="w-full"
                   onClick={() =>
-                    mutateGeometry(flipDoorHinge(geometry, selectedOpening.id))
+                    commitGeometry(flipDoorHinge(geometry, selectedOpening.id))
                   }
                 >
                   Flip hinge
@@ -612,7 +757,7 @@ export function EditorClient({
               variant="ghost"
               className="w-full text-danger hover:bg-danger/5"
               onClick={() => {
-                mutateGeometry(deleteOpening(geometry, selectedOpening.id));
+                commitGeometry(deleteOpening(geometry, selectedOpening.id));
                 setSelectedOpeningId(null);
               }}
             >
@@ -638,7 +783,7 @@ export function EditorClient({
                 variant="secondary"
                 className="w-full"
                 onClick={() =>
-                  mutateGeometry(rotateStairs(geometry, selectedStairs.id))
+                  commitGeometry(rotateStairs(geometry, selectedStairs.id))
                 }
               >
                 Rotate 90°
@@ -648,7 +793,7 @@ export function EditorClient({
                 variant="secondary"
                 className="w-full"
                 onClick={() =>
-                  mutateGeometry(
+                  commitGeometry(
                     toggleStairsDirection(geometry, selectedStairs.id),
                   )
                 }
@@ -677,7 +822,7 @@ export function EditorClient({
                 variant="ghost"
                 className="w-full text-danger hover:bg-danger/5"
                 onClick={() => {
-                  mutateGeometry(deleteStairs(geometry, selectedStairs.id));
+                  commitGeometry(deleteStairs(geometry, selectedStairs.id));
                   setSelectedStairsId(null);
                 }}
               >
@@ -700,7 +845,7 @@ export function EditorClient({
           onConfirmAdd={(widthIn, depthIn) => {
             const next = addRectangularRoom(geometry, widthIn, depthIn);
             const newRoom = next.rooms[next.rooms.length - 1];
-            mutateGeometry(next);
+            commitGeometry(next);
             setSheet(null);
             setSelectedWallId(null);
             setSelectedRoomId(newRoom?.id ?? null);
@@ -713,23 +858,34 @@ export function EditorClient({
               depthIn,
             );
             const newRoom = next.rooms[next.rooms.length - 1];
-            mutateGeometry(next);
+            commitGeometry(next);
             setSheet(null);
             setSelectedWallId(null);
             setSelectedRoomId(newRoom?.id ?? null);
           }}
           onConfirmEdit={(id, widthIn, depthIn) => {
             if (geometry.stairs.some((s) => s.id === id)) {
-              mutateGeometry(resizeStairs(geometry, id, widthIn, depthIn));
+              commitGeometry(resizeStairs(geometry, id, widthIn, depthIn));
             } else {
-              mutateGeometry(resizeRoom(geometry, id, widthIn, depthIn));
+              commitGeometry(resizeRoom(geometry, id, widthIn, depthIn));
             }
             setSheet(null);
           }}
           onDelete={(roomId) => {
-            mutateGeometry(deleteRoom(geometry, roomId));
+            commitGeometry(deleteRoom(geometry, roomId));
             setSelectedRoomId(null);
             setSheet(null);
+          }}
+        />
+      ) : null}
+
+      {typePickerOpen && selectedRoom ? (
+        <RoomTypePicker
+          currentType={normalizeRoomType(selectedRoom.type)}
+          onClose={() => setTypePickerOpen(false)}
+          onSelect={(type) => {
+            commitGeometry(setRoomType(geometry, selectedRoom.id, type));
+            setTypePickerOpen(false);
           }}
         />
       ) : null}

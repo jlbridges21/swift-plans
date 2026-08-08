@@ -8,6 +8,10 @@
  * schemaVersion 3: openings anchored to room edges (not derived wall ids),
  * so they survive adjoining / neighbor deletion. Walls still derived; opening
  * gaps are cut into derived spans at finalize time.
+ *
+ * Room types live in src/lib/plan/room-types.ts (single source of truth).
+ * Expanding the type union does not bump schemaVersion — stored shape is
+ * unchanged; legacy values like `entry` normalize to `foyer` on load.
  */
 
 export type PlanPoint = { x: number; y: number };
@@ -27,19 +31,15 @@ export type HingeEnd = "start" | "end";
  */
 export type SwingSide = 1 | -1;
 
-export type PlanRoomType =
-  | "living_room"
-  | "dining_room"
-  | "bedroom"
-  | "hallway"
-  | "entry"
-  | "kitchen"
-  | "bathroom"
-  | "laundry"
-  | "closet"
-  | "garage";
+export type {
+  PlanRoomCategory,
+  PlanRoomType,
+} from "../lib/plan/room-types";
 
-export type PlanRoomCategory = "living" | "wet" | "service";
+import type {
+  PlanRoomCategory,
+  PlanRoomType,
+} from "../lib/plan/room-types";
 
 export type PlanWall = {
   /**

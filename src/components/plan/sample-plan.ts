@@ -174,7 +174,7 @@ export const sampleFloorGeometry: FloorGeometry = {
     {
       id: "primary",
       name: "Primary Bedroom",
-      type: "bedroom",
+      type: "primary_bedroom",
       category: "living",
       polygon: [pt(12, 12), pt(180, 12), pt(180, 156), pt(12, 156)],
       labelAnchor: pt(96, 78),
@@ -182,7 +182,7 @@ export const sampleFloorGeometry: FloorGeometry = {
     {
       id: "wic",
       name: "Walk-In Closet",
-      type: "closet",
+      type: "walk_in_closet",
       category: "service",
       polygon: [
         pt(180, 12),
@@ -269,7 +269,7 @@ export const sampleFloorGeometry: FloorGeometry = {
       id: "hall",
       name: "Hallway",
       type: "hallway",
-      category: "living",
+      category: "service",
       polygon: [pt(312, 84), pt(384, 84), pt(384, 156), pt(312, 156)],
       labelAnchor: pt(348, 120),
     },

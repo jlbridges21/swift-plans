@@ -11,9 +11,17 @@ import {
 } from "@/components/plan/geometry";
 import {
   PLAN_FONT_FAMILY,
-  floorTextureForRoomType,
   planTokens,
 } from "@/lib/plan-style/tokens";
+import { livingAreaSqFt } from "@/lib/plan/area";
+import {
+  estimateLabelTextWidth,
+  roomAabb,
+} from "@/lib/plan/labels";
+import {
+  floorTextureForRoomType,
+  normalizeRoomType,
+} from "@/lib/plan/room-types";
 import {
   doorHingeLatchFromAnchor,
   resolveOpeningGeom,
@@ -22,6 +30,7 @@ import { stairsDirectionVector, stairsPolygon } from "@/lib/plan/stairs";
 import {
   isEmptyFloorGeometry,
   type FloorGeometry,
+  type PlanRoom,
 } from "@/types/plan-geometry";
 
 /** Finite viewBox parts for empty and non-empty documents. */
@@ -45,6 +54,36 @@ type PlanDocumentProps = {
   geometry: FloorGeometry;
 };
 
+type LabelLayout = {
+  showDims: boolean;
+  showArea: boolean;
+  nameSize: number;
+};
+
+function labelLayoutForRoom(room: PlanRoom): LabelLayout {
+  const box = roomAabb(room);
+  const avail =
+    box.maxX - box.minX - planTokens.labelFit.paddingIn * 2;
+  const name = room.name.toUpperCase();
+  const dims = formatRoomDimensions(room.polygon);
+  const area = `${Math.round(sqInToSqFt(polygonAreaSqIn(room.polygon)))} SQ FT`;
+
+  let nameSize = planTokens.typography.labelSize;
+  const nameFits = (size: number) =>
+    estimateLabelTextWidth(name, size) <= Math.max(avail, 1);
+
+  while (nameSize > planTokens.labelFit.minNameSize && !nameFits(nameSize)) {
+    nameSize -= 1;
+  }
+
+  const dimsW = estimateLabelTextWidth(dims, planTokens.typography.dimensionSize);
+  const areaW = estimateLabelTextWidth(area, planTokens.typography.areaSize);
+  const showDims = dimsW <= avail;
+  const showArea = showDims && areaW <= avail;
+
+  return { showDims, showArea, nameSize };
+}
+
 /**
  * Pure document layers (no SVG root, no editing chrome).
  * Safe to place inside an editor camera SVG or a standalone PlanDrawing.
@@ -54,21 +93,21 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
   const margin = planTokens.sheetMargin;
   const empty = isEmptyFloorGeometry(geometry);
 
-  const livingRooms = geometry.rooms.filter((r) => r.type !== "garage");
-  const totalLivingSqFt = livingRooms.reduce(
-    (sum, room) => sum + sqInToSqFt(polygonAreaSqIn(room.polygon)),
-    0,
-  );
+  const livingSqFt = livingAreaSqFt(geometry);
+  const totalLivingSqFt = livingSqFt ?? 0;
 
   const texturedRooms = geometry.rooms.filter(
-    (room) => floorTextureForRoomType(room.type) !== "none",
+    (room) =>
+      floorTextureForRoomType(normalizeRoomType(room.type)) !== "none",
   );
 
   return (
     <g aria-label={title || "Floor plan"}>
       <defs>
         {texturedRooms.map((room) => {
-          const texture = floorTextureForRoomType(room.type);
+          const texture = floorTextureForRoomType(
+            normalizeRoomType(room.type),
+          );
           if (texture === "plank") {
             const spacing = planTokens.plankSpacing;
             const rotation = roomLongAxisDegrees(room.polygon);
@@ -134,7 +173,8 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
             fill={planTokens.fill[room.category]}
             stroke="none"
           />
-          {floorTextureForRoomType(room.type) !== "none" ? (
+          {floorTextureForRoomType(normalizeRoomType(room.type)) !==
+          "none" ? (
             <path
               d={pointsToPath(room.polygon)}
               fill={`url(#tex-${room.id})`}
@@ -325,6 +365,7 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
         const at = room.labelAnchor;
         const area = Math.round(sqInToSqFt(polygonAreaSqIn(room.polygon)));
         const dims = formatRoomDimensions(room.polygon);
+        const layout = labelLayoutForRoom(room);
         return (
           <text
             key={`label-${room.id}`}
@@ -337,36 +378,40 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
               x={at.x}
               dy="0"
               fill={planTokens.inkMuted}
-              fontSize={planTokens.typography.labelSize}
+              fontSize={layout.nameSize}
               fontWeight={planTokens.typography.labelWeight}
               letterSpacing={planTokens.typography.labelLetterSpacing}
             >
               {room.name.toUpperCase()}
             </tspan>
-            <tspan
-              x={at.x}
-              dy="16"
-              fill={planTokens.inkSubtle}
-              fontSize={planTokens.typography.dimensionSize}
-              fontWeight={400}
-              letterSpacing="0.04em"
-            >
-              {dims}
-            </tspan>
-            <tspan
-              x={at.x}
-              dy="14"
-              fill={planTokens.inkSubtle}
-              fontSize={planTokens.typography.areaSize}
-              fontWeight={400}
-            >
-              {area} SQ FT
-            </tspan>
+            {layout.showDims ? (
+              <tspan
+                x={at.x}
+                dy={planTokens.labelFit.dimLineDy}
+                fill={planTokens.inkSubtle}
+                fontSize={planTokens.typography.dimensionSize}
+                fontWeight={400}
+                letterSpacing="0.04em"
+              >
+                {dims}
+              </tspan>
+            ) : null}
+            {layout.showArea ? (
+              <tspan
+                x={at.x}
+                dy={planTokens.labelFit.areaLineDy}
+                fill={planTokens.inkSubtle}
+                fontSize={planTokens.typography.areaSize}
+                fontWeight={400}
+              >
+                {area} SQ FT
+              </tspan>
+            ) : null}
           </text>
         );
       })}
 
-      {!empty ? (
+      {!empty && livingSqFt !== null ? (
         <text
           x={bounds.minX + margin * 0.15}
           y={bounds.maxY + margin * 0.55}

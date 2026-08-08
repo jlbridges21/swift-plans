@@ -19,7 +19,7 @@ import {
 import { listOpenings } from "@/lib/plan/openings";
 import { openingWorldSpan } from "@/lib/plan/openings";
 import { stairsPolygon } from "@/lib/plan/stairs";
-import type { FloorGeometry } from "@/types/plan-geometry";
+import type { FloorGeometry, PlanPoint } from "@/types/plan-geometry";
 
 export type CameraViewBox = {
   x: number;
@@ -41,6 +41,11 @@ type EditorCanvasProps = {
   onMoveRoom: (roomId: string, dx: number, dy: number) => void;
   onMoveOpening: (openingId: string, offsetIn: number) => void;
   onMoveStairs: (stairsId: string, dx: number, dy: number) => void;
+  onMoveLabel: (roomId: string, at: PlanPoint) => void;
+  /** Document-mutating gesture started (not pan/zoom). */
+  onDocumentGestureStart: () => void;
+  /** Document-mutating gesture ended — commit one history entry. */
+  onDocumentGestureEnd: () => void;
   onInteractionChange: (active: boolean) => void;
 };
 
@@ -120,6 +125,13 @@ type ActiveGesture =
       lastWorldY: number;
     }
   | {
+      kind: "move-label";
+      pointerId: number;
+      roomId: string;
+      lastClientX: number;
+      lastClientY: number;
+    }
+  | {
       kind: "pinch";
       pointers: Map<number, { x: number; y: number }>;
       lastDist: number;
@@ -144,6 +156,9 @@ export function EditorCanvas({
   onMoveRoom,
   onMoveOpening,
   onMoveStairs,
+  onMoveLabel,
+  onDocumentGestureStart,
+  onDocumentGestureEnd,
   onInteractionChange,
 }: EditorCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -284,8 +299,12 @@ export function EditorCanvas({
       (existing.kind === "pan" ||
         existing.kind === "move-room" ||
         existing.kind === "move-opening" ||
-        existing.kind === "move-stairs")
+        existing.kind === "move-stairs" ||
+        existing.kind === "move-label")
     ) {
+      if (existing.kind !== "pan") {
+        onDocumentGestureEnd();
+      }
       beginPinch(
         existing.pointerId,
         { x: existing.lastClientX, y: existing.lastClientY },
@@ -304,6 +323,8 @@ export function EditorCanvas({
     }
 
     const target = e.target as Element;
+    const hitLabel = target.closest("[data-label-hit]");
+    const labelRoomId = hitLabel?.getAttribute("data-label-hit") ?? null;
     const hitOpening = target.closest("[data-opening-hit]");
     const openingId = hitOpening?.getAttribute("data-opening-hit") ?? null;
     const hitStairs = target.closest("[data-stairs-hit]");
@@ -312,6 +333,22 @@ export function EditorCanvas({
     const wallId = hitWall?.getAttribute("data-wall-hit") ?? null;
     const hitRoom = target.closest("[data-room-hit]");
     const roomId = hitRoom?.getAttribute("data-room-hit") ?? null;
+
+    if (labelRoomId) {
+      onSelectRoom(labelRoomId);
+      gestureRef.current = {
+        kind: "move-label",
+        pointerId: e.pointerId,
+        roomId: labelRoomId,
+        lastClientX: e.clientX,
+        lastClientY: e.clientY,
+      };
+      onDocumentGestureStart();
+      onInteractionChange(true);
+      (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
 
     if (openingId) {
       onSelectOpening(openingId);
@@ -322,6 +359,7 @@ export function EditorCanvas({
         lastClientX: e.clientX,
         lastClientY: e.clientY,
       };
+      onDocumentGestureStart();
       onInteractionChange(true);
       (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
       e.preventDefault();
@@ -340,6 +378,7 @@ export function EditorCanvas({
         lastWorldX: world.x,
         lastWorldY: world.y,
       };
+      onDocumentGestureStart();
       onInteractionChange(true);
       (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
       e.preventDefault();
@@ -364,6 +403,7 @@ export function EditorCanvas({
         lastWorldX: world.x,
         lastWorldY: world.y,
       };
+      onDocumentGestureStart();
       onInteractionChange(true);
       (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
       e.preventDefault();
@@ -501,6 +541,14 @@ export function EditorCanvas({
       g.lastWorldX = world.x;
       g.lastWorldY = world.y;
       onMoveStairs(g.stairsId, snapped.dx, snapped.dy);
+      return;
+    }
+
+    if (g.kind === "move-label" && e.pointerId === g.pointerId) {
+      g.lastClientX = e.clientX;
+      g.lastClientY = e.clientY;
+      const world = clientToWorld(e.clientX, e.clientY);
+      onMoveLabel(g.roomId, world);
     }
   }
 
@@ -518,8 +566,14 @@ export function EditorCanvas({
     }
 
     if (e.pointerId !== g.pointerId) return;
+    const wasDocument =
+      g.kind === "move-room" ||
+      g.kind === "move-opening" ||
+      g.kind === "move-stairs" ||
+      g.kind === "move-label";
     gestureRef.current = null;
     setSnapGuides([]);
+    if (wasDocument) onDocumentGestureEnd();
     onInteractionChange(false);
   }
 
@@ -529,6 +583,10 @@ export function EditorCanvas({
 
   // ~24px hit stroke in document inches at current zoom
   const hitStrokeIn = Math.max(8, (24 * view.w) / 390);
+  const labelHitR = Math.max(
+    planTokens.labelHitRadiusIn,
+    (22 * view.w) / 390,
+  );
   const guidePad = Math.max(view.w, view.h);
 
   return (
@@ -607,6 +665,19 @@ export function EditorCanvas({
               />
             );
           })}
+
+          {/* Labels above room fills so drag does not start a room move */}
+          {geometry.rooms.map((room) => (
+            <circle
+              key={`hit-label-${room.id}`}
+              data-label-hit={room.id}
+              cx={room.labelAnchor.x}
+              cy={room.labelAnchor.y}
+              r={labelHitR}
+              fill="transparent"
+              style={{ cursor: "grab", touchAction: "none" }}
+            />
+          ))}
 
           {selectedRoom ? (
             <path

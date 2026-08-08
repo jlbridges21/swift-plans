@@ -5,46 +5,11 @@
  * prefers-color-scheme. Do not wire these to --sp-* tokens.
  *
  * Drawing space: 1 user unit = 1 inch (same numeric unit as stored measurements).
+ *
+ * Room type → category / texture: src/lib/plan/room-types.ts (single source).
  */
 
 export type RoomCategory = "living" | "wet" | "service";
-
-export type FloorTexture = "plank" | "tile" | "none";
-
-/** Map common room types → tonal fill category. */
-export const ROOM_TYPE_CATEGORY = {
-  living_room: "living",
-  dining_room: "living",
-  bedroom: "living",
-  hallway: "living",
-  entry: "living",
-  kitchen: "wet",
-  bathroom: "wet",
-  laundry: "wet",
-  closet: "service",
-  garage: "service",
-} as const satisfies Record<string, RoomCategory>;
-
-export type RoomType = keyof typeof ROOM_TYPE_CATEGORY;
-
-/** Floor material hatch — separate from tonal fill category. */
-export function floorTextureForRoomType(type: RoomType): FloorTexture {
-  switch (type) {
-    case "living_room":
-    case "dining_room":
-    case "bedroom":
-    case "entry":
-      return "plank";
-    case "bathroom":
-    case "kitchen":
-    case "laundry":
-      return "tile";
-    case "garage":
-    case "closet":
-    case "hallway":
-      return "none";
-  }
-}
 
 /**
  * Literal font stack for plan SVG text.
@@ -106,6 +71,29 @@ export const planTokens = {
     areaSize: 11,
     totalAreaSize: 18,
   },
+
+  /**
+   * Label layout inside small rooms (document inches / font sizes).
+   * Widths are compared against estimated uppercase text width.
+   */
+  labelFit: {
+    /** Horizontal padding deducted from room AABB when measuring fit. */
+    paddingIn: 8,
+    /** Floor font size when the name is still too wide (then allow overflow). */
+    minNameSize: 10,
+    /** Line spacing between name / dims / area tspans. */
+    dimLineDy: 16,
+    areaLineDy: 14,
+  },
+
+  /**
+   * How far a dragged label may leave the room AABB (inches).
+   * Keeps labels near their room without hard-clipping to the polygon.
+   */
+  labelDragMaxOutsetIn: 36,
+
+  /** Hit radius for label drag handles in document inches (scaled in editor). */
+  labelHitRadiusIn: 14,
 
   sheetMargin: 48,
 
