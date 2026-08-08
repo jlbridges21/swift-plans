@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "check:plan-geometry": "node --experimental-strip-types scripts/check-plan-geometry.ts"
+    "check:plan-geometry": "node --experimental-strip-types scripts/check-plan-geometry.ts",
+    "check:measure": "node --experimental-strip-types scripts/check-measure.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

@@ -21,10 +21,6 @@ import {
   type FloorGeometry,
 } from "@/types/plan-geometry";
 
-type PlanDrawingProps = {
-  geometry: FloorGeometry;
-};
-
 function wallById(geometry: FloorGeometry, wallId: string) {
   const wall = geometry.walls.find((w) => w.id === wallId);
   if (!wall) {
@@ -50,9 +46,15 @@ export function planViewBox(geometry: FloorGeometry): {
   };
 }
 
-export function PlanDrawing({ geometry }: PlanDrawingProps) {
-  const { minX: viewMinX, minY: viewMinY, width: viewW, height: viewH } =
-    planViewBox(geometry);
+type PlanDocumentProps = {
+  geometry: FloorGeometry;
+};
+
+/**
+ * Pure document layers (no SVG root, no editing chrome).
+ * Safe to place inside an editor camera SVG or a standalone PlanDrawing.
+ */
+export function PlanDocument({ geometry }: PlanDocumentProps) {
   const { bounds, title } = geometry.meta;
   const margin = planTokens.sheetMargin;
   const empty = isEmptyFloorGeometry(geometry);
@@ -68,17 +70,7 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
   );
 
   return (
-    <svg
-      viewBox={`${viewMinX} ${viewMinY} ${viewW} ${viewH}`}
-      role="img"
-      aria-label={title || "Floor plan"}
-      style={{
-        width: "100%",
-        height: "auto",
-        display: "block",
-        background: planTokens.paper,
-      }}
-    >
+    <g aria-label={title || "Floor plan"}>
       <defs>
         {texturedRooms.map((room) => {
           const texture = floorTextureForRoomType(room.type);
@@ -127,14 +119,6 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
         })}
       </defs>
 
-      <rect
-        x={viewMinX}
-        y={viewMinY}
-        width={viewW}
-        height={viewH}
-        fill={planTokens.paper}
-      />
-
       {empty ? (
         <text
           x={(bounds.minX + bounds.maxX) / 2}
@@ -147,6 +131,7 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
           Empty floor plan — add your first room next
         </text>
       ) : null}
+
       {geometry.rooms.map((room) => (
         <g key={`fill-${room.id}`}>
           <path
@@ -321,6 +306,40 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
           TOTAL LIVING AREA  {Math.round(totalLivingSqFt).toLocaleString()} SQ FT
         </text>
       ) : null}
+    </g>
+  );
+}
+
+type PlanDrawingProps = {
+  geometry: FloorGeometry;
+};
+
+/** Standalone document renderer (debug / export). No editing chrome. */
+export function PlanDrawing({ geometry }: PlanDrawingProps) {
+  const { minX: viewMinX, minY: viewMinY, width: viewW, height: viewH } =
+    planViewBox(geometry);
+  const { title } = geometry.meta;
+
+  return (
+    <svg
+      viewBox={`${viewMinX} ${viewMinY} ${viewW} ${viewH}`}
+      role="img"
+      aria-label={title || "Floor plan"}
+      style={{
+        width: "100%",
+        height: "auto",
+        display: "block",
+        background: planTokens.paper,
+      }}
+    >
+      <rect
+        x={viewMinX}
+        y={viewMinY}
+        width={viewW}
+        height={viewH}
+        fill={planTokens.paper}
+      />
+      <PlanDocument geometry={geometry} />
     </svg>
   );
 }
