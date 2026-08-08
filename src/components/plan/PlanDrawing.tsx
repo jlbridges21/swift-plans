@@ -1,8 +1,6 @@
 import {
-  doorHingeAndLatch,
   doorSwingPaths,
   formatRoomDimensions,
-  openingEndpoints,
   pointsToPath,
   polygonAreaSqIn,
   ringsToPath,
@@ -17,17 +15,14 @@ import {
   planTokens,
 } from "@/lib/plan-style/tokens";
 import {
+  doorHingeLatchFromAnchor,
+  resolveOpeningGeom,
+} from "@/lib/plan/resolve-opening";
+import { stairsDirectionVector, stairsPolygon } from "@/lib/plan/stairs";
+import {
   isEmptyFloorGeometry,
   type FloorGeometry,
 } from "@/types/plan-geometry";
-
-function wallById(geometry: FloorGeometry, wallId: string) {
-  const wall = geometry.walls.find((w) => w.id === wallId);
-  if (!wall) {
-    throw new Error(`Unknown wall id: ${wallId}`);
-  }
-  return wall;
-}
 
 /** Finite viewBox parts for empty and non-empty documents. */
 export function planViewBox(geometry: FloorGeometry): {
@@ -187,17 +182,12 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
         })}
 
       {geometry.windows.map((win) => {
-        const wall = wallById(geometry, win.wallId);
-        const { start, end } = openingEndpoints(
-          wall.centerline,
-          win.offset,
-          win.width,
-          wall.closed,
-        );
+        const geom = resolveOpeningGeom(geometry, win);
+        if (!geom) return null;
         const [a1, b1, a2, b2] = windowPaneLines(
-          start,
-          end,
-          wall.thickness,
+          geom.start,
+          geom.end,
+          geom.thickness,
           planTokens.window.insetRatio,
         );
         return (
@@ -215,14 +205,9 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
       })}
 
       {geometry.doors.map((door) => {
-        const wall = wallById(geometry, door.wallId);
-        const { hinge, latch } = doorHingeAndLatch(
-          wall.centerline,
-          door.offset,
-          door.width,
-          door.hingeSide,
-          wall.closed,
-        );
+        const resolved = doorHingeLatchFromAnchor(geometry, door);
+        if (!resolved) return null;
+        const { hinge, latch, thickness } = resolved;
         const { leaf, arc } = doorSwingPaths(hinge, latch, door.swingSide);
         return (
           <g
@@ -233,17 +218,105 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
             strokeLinecap="round"
             strokeLinejoin="round"
           >
+            {/* Clears residual fill on hand-authored samples; no-op on true gaps */}
             <line
               x1={hinge.x}
               y1={hinge.y}
               x2={latch.x}
               y2={latch.y}
               stroke={planTokens.paper}
-              strokeWidth={wall.thickness * 0.85}
+              strokeWidth={thickness * 0.85}
               strokeLinecap="butt"
             />
             <path d={arc} />
             <path d={leaf} />
+          </g>
+        );
+      })}
+
+      {/* Plain openings: gap only — no symbol */}
+
+      {geometry.stairs.map((stair) => {
+        const poly = stairsPolygon(stair);
+        const dir = stairsDirectionVector(stair);
+        const cx = poly.reduce((s, p) => s + p.x, 0) / poly.length;
+        const cy = poly.reduce((s, p) => s + p.y, 0) / poly.length;
+        const arrowLen = Math.min(stair.widthIn, stair.depthIn) * 0.35;
+        const tip = {
+          x: cx + dir.x * arrowLen,
+          y: cy + dir.y * arrowLen,
+        };
+        // Tread lines perpendicular to ascent
+        const px = -dir.y;
+        const py = dir.x;
+        const halfW = stair.widthIn * 0.4;
+        const treadCount = Math.max(3, Math.round(stair.depthIn / 12));
+        const treads = [];
+        for (let i = 1; i < treadCount; i += 1) {
+          const t = i / treadCount;
+          const ox = poly[0].x + (poly[3].x - poly[0].x) * t;
+          const oy = poly[0].y + (poly[3].y - poly[0].y) * t;
+          // Along width from left side of run
+          const along = {
+            x: (poly[1].x - poly[0].x) * t + poly[0].x,
+            y: (poly[1].y - poly[0].y) * t + poly[0].y,
+          };
+          // Better: interpolate along depth edges
+          const left = {
+            x: poly[0].x + (poly[3].x - poly[0].x) * t,
+            y: poly[0].y + (poly[3].y - poly[0].y) * t,
+          };
+          const right = {
+            x: poly[1].x + (poly[2].x - poly[1].x) * t,
+            y: poly[1].y + (poly[2].y - poly[1].y) * t,
+          };
+          void ox;
+          void oy;
+          void along;
+          void halfW;
+          void px;
+          void py;
+          treads.push(
+            <line
+              key={`tread-${stair.id}-${i}`}
+              x1={left.x}
+              y1={left.y}
+              x2={right.x}
+              y2={right.y}
+              stroke={planTokens.symbol}
+              strokeWidth={planTokens.stroke.annotation}
+            />,
+          );
+        }
+        return (
+          <g key={stair.id}>
+            <path
+              d={pointsToPath(poly)}
+              fill="none"
+              stroke={planTokens.ink}
+              strokeWidth={planTokens.stroke.fixture}
+            />
+            {treads}
+            <line
+              x1={cx}
+              y1={cy}
+              x2={tip.x}
+              y2={tip.y}
+              stroke={planTokens.ink}
+              strokeWidth={planTokens.stroke.fixture}
+              strokeLinecap="round"
+            />
+            <text
+              x={cx}
+              y={cy - 8}
+              textAnchor="middle"
+              fontFamily={PLAN_FONT_FAMILY}
+              fill={planTokens.inkMuted}
+              fontSize={11}
+              fontWeight={600}
+            >
+              {stair.direction.toUpperCase()}
+            </text>
           </g>
         );
       })}

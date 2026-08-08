@@ -13,8 +13,12 @@ import { planTokens } from "@/lib/plan-style/tokens";
 import {
   ROOM_SNAP_THRESHOLD_PX,
   snapRoomTranslation,
+  snapStairsTranslation,
   type SnapGuide,
 } from "@/lib/plan/snap";
+import { listOpenings } from "@/lib/plan/openings";
+import { openingWorldSpan } from "@/lib/plan/openings";
+import { stairsPolygon } from "@/lib/plan/stairs";
 import type { FloorGeometry } from "@/types/plan-geometry";
 
 export type CameraViewBox = {
@@ -28,9 +32,15 @@ type EditorCanvasProps = {
   geometry: FloorGeometry;
   selectedRoomId: string | null;
   selectedWallId: string | null;
+  selectedOpeningId: string | null;
+  selectedStairsId: string | null;
   onSelectRoom: (roomId: string | null) => void;
   onSelectWall: (wallId: string | null) => void;
+  onSelectOpening: (openingId: string | null) => void;
+  onSelectStairs: (stairsId: string | null) => void;
   onMoveRoom: (roomId: string, dx: number, dy: number) => void;
+  onMoveOpening: (openingId: string, offsetIn: number) => void;
+  onMoveStairs: (stairsId: string, dx: number, dy: number) => void;
   onInteractionChange: (active: boolean) => void;
 };
 
@@ -94,6 +104,22 @@ type ActiveGesture =
       lastWorldY: number;
     }
   | {
+      kind: "move-opening";
+      pointerId: number;
+      openingId: string;
+      lastClientX: number;
+      lastClientY: number;
+    }
+  | {
+      kind: "move-stairs";
+      pointerId: number;
+      stairsId: string;
+      lastClientX: number;
+      lastClientY: number;
+      lastWorldX: number;
+      lastWorldY: number;
+    }
+  | {
       kind: "pinch";
       pointers: Map<number, { x: number; y: number }>;
       lastDist: number;
@@ -109,9 +135,15 @@ export function EditorCanvas({
   geometry,
   selectedRoomId,
   selectedWallId,
+  selectedOpeningId,
+  selectedStairsId,
   onSelectRoom,
   onSelectWall,
+  onSelectOpening,
+  onSelectStairs,
   onMoveRoom,
+  onMoveOpening,
+  onMoveStairs,
   onInteractionChange,
 }: EditorCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -249,7 +281,10 @@ export function EditorCanvas({
 
     if (
       existing &&
-      (existing.kind === "pan" || existing.kind === "move-room")
+      (existing.kind === "pan" ||
+        existing.kind === "move-room" ||
+        existing.kind === "move-opening" ||
+        existing.kind === "move-stairs")
     ) {
       beginPinch(
         existing.pointerId,
@@ -269,22 +304,56 @@ export function EditorCanvas({
     }
 
     const target = e.target as Element;
+    const hitOpening = target.closest("[data-opening-hit]");
+    const openingId = hitOpening?.getAttribute("data-opening-hit") ?? null;
+    const hitStairs = target.closest("[data-stairs-hit]");
+    const stairsId = hitStairs?.getAttribute("data-stairs-hit") ?? null;
     const hitWall = target.closest("[data-wall-hit]");
     const wallId = hitWall?.getAttribute("data-wall-hit") ?? null;
     const hitRoom = target.closest("[data-room-hit]");
     const roomId = hitRoom?.getAttribute("data-room-hit") ?? null;
 
-    // Walls take priority when the hit is on a wall stroke (thin target on top)
+    if (openingId) {
+      onSelectOpening(openingId);
+      gestureRef.current = {
+        kind: "move-opening",
+        pointerId: e.pointerId,
+        openingId,
+        lastClientX: e.clientX,
+        lastClientY: e.clientY,
+      };
+      onInteractionChange(true);
+      (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
+
+    if (stairsId) {
+      onSelectStairs(stairsId);
+      const world = clientToWorld(e.clientX, e.clientY);
+      gestureRef.current = {
+        kind: "move-stairs",
+        pointerId: e.pointerId,
+        stairsId,
+        lastClientX: e.clientX,
+        lastClientY: e.clientY,
+        lastWorldX: world.x,
+        lastWorldY: world.y,
+      };
+      onInteractionChange(true);
+      (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
+
     if (wallId) {
       onSelectWall(wallId);
-      onSelectRoom(null);
       e.preventDefault();
       return;
     }
 
     if (roomId) {
       onSelectRoom(roomId);
-      onSelectWall(null);
       const world = clientToWorld(e.clientX, e.clientY);
       gestureRef.current = {
         kind: "move-room",
@@ -303,6 +372,8 @@ export function EditorCanvas({
 
     onSelectRoom(null);
     onSelectWall(null);
+    onSelectOpening(null);
+    onSelectStairs(null);
     gestureRef.current = {
       kind: "pan",
       pointerId: e.pointerId,
@@ -381,10 +452,55 @@ export function EditorCanvas({
       dx = snapped.dx;
       dy = snapped.dy;
 
-      // lastWorld tracks unsnapped finger so we don't accumulate snap error
       g.lastWorldX = world.x;
       g.lastWorldY = world.y;
       onMoveRoom(g.roomId, dx, dy);
+      return;
+    }
+
+    if (g.kind === "move-opening" && e.pointerId === g.pointerId) {
+      g.lastClientX = e.clientX;
+      g.lastClientY = e.clientY;
+      const world = clientToWorld(e.clientX, e.clientY);
+      const opening = listOpenings(geometryRef.current).find(
+        (o) => o.id === g.openingId,
+      );
+      if (!opening) return;
+      const room = geometryRef.current.rooms.find((r) => r.id === opening.roomId);
+      if (!room) return;
+      const span = openingWorldSpan(geometryRef.current.rooms, opening);
+      if (!span) return;
+      const edge = span.edge;
+      const proj =
+        (world.x - edge.a.x) * edge.dir.x + (world.y - edge.a.y) * edge.dir.y;
+      const newOffset = proj - opening.widthIn / 2;
+      onMoveOpening(g.openingId, newOffset);
+      return;
+    }
+
+    if (g.kind === "move-stairs" && e.pointerId === g.pointerId) {
+      const world = clientToWorld(e.clientX, e.clientY);
+      const dx = world.x - g.lastWorldX;
+      const dy = world.y - g.lastWorldY;
+      g.lastClientX = e.clientX;
+      g.lastClientY = e.clientY;
+      if (dx === 0 && dy === 0) return;
+      const svg = svgRef.current;
+      const rect = svg?.getBoundingClientRect();
+      const v = viewRef.current;
+      const pxPerIn = rect && rect.width > 0 ? rect.width / v.w : 1;
+      const thresholdIn = ROOM_SNAP_THRESHOLD_PX / pxPerIn;
+      const snapped = snapStairsTranslation(
+        geometryRef.current,
+        g.stairsId,
+        dx,
+        dy,
+        thresholdIn,
+      );
+      setSnapGuides(snapped.guides);
+      g.lastWorldX = world.x;
+      g.lastWorldY = world.y;
+      onMoveStairs(g.stairsId, snapped.dx, snapped.dy);
     }
   }
 
@@ -409,6 +525,7 @@ export function EditorCanvas({
 
   const selectedRoom = geometry.rooms.find((r) => r.id === selectedRoomId);
   const selectedWall = geometry.walls.find((w) => w.id === selectedWallId);
+  const openings = listOpenings(geometry);
 
   // ~24px hit stroke in document inches at current zoom
   const hitStrokeIn = Math.max(8, (24 * view.w) / 390);
@@ -443,6 +560,18 @@ export function EditorCanvas({
             />
           ))}
 
+          {geometry.stairs.map((stair) => (
+            <path
+              key={`hit-stairs-${stair.id}`}
+              data-stairs-hit={stair.id}
+              d={pointsToPath(stairsPolygon(stair))}
+              fill="transparent"
+              stroke="transparent"
+              strokeWidth={12}
+              style={{ cursor: "grab", touchAction: "none" }}
+            />
+          ))}
+
           {/* Wall hits above rooms so shared/exterior edges stay selectable */}
           {geometry.walls.map((wall) => {
             const d = pointsToPath(wall.centerline, false);
@@ -456,6 +585,25 @@ export function EditorCanvas({
                 strokeWidth={hitStrokeIn}
                 strokeLinecap="round"
                 style={{ cursor: "pointer", touchAction: "none" }}
+              />
+            );
+          })}
+
+          {openings.map((op) => {
+            const span = openingWorldSpan(geometry.rooms, op);
+            if (!span) return null;
+            return (
+              <line
+                key={`hit-op-${op.id}`}
+                data-opening-hit={op.id}
+                x1={span.start.x}
+                y1={span.start.y}
+                x2={span.end.x}
+                y2={span.end.y}
+                stroke="transparent"
+                strokeWidth={hitStrokeIn}
+                strokeLinecap="round"
+                style={{ cursor: "grab", touchAction: "none" }}
               />
             );
           })}
@@ -482,6 +630,46 @@ export function EditorCanvas({
               pointerEvents="none"
             />
           ) : null}
+
+          {selectedOpeningId
+            ? (() => {
+                const op = openings.find((o) => o.id === selectedOpeningId);
+                if (!op) return null;
+                const span = openingWorldSpan(geometry.rooms, op);
+                if (!span) return null;
+                return (
+                  <line
+                    x1={span.start.x}
+                    y1={span.start.y}
+                    x2={span.end.x}
+                    y2={span.end.y}
+                    stroke="#2563eb"
+                    strokeWidth={4}
+                    strokeLinecap="round"
+                    pointerEvents="none"
+                  />
+                );
+              })()
+            : null}
+
+          {selectedStairsId
+            ? (() => {
+                const stair = geometry.stairs.find(
+                  (s) => s.id === selectedStairsId,
+                );
+                if (!stair) return null;
+                return (
+                  <path
+                    d={pointsToPath(stairsPolygon(stair))}
+                    fill="none"
+                    stroke="#2563eb"
+                    strokeWidth={2.5}
+                    strokeDasharray="8 6"
+                    pointerEvents="none"
+                  />
+                );
+              })()
+            : null}
 
           {snapGuides.map((g, i) =>
             g.kind === "x" ? (

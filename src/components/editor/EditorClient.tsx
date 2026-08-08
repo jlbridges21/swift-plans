@@ -16,16 +16,32 @@ import { RenameProjectForm } from "@/components/projects/ProjectManageForms";
 import { Button } from "@/components/ui/Button";
 import { saveFloorGeometry } from "@/lib/plan/actions";
 import {
+  addDoorOnWall,
+  addOpeningOnWall,
   addRectangularRoom,
   addRoomAdjoiningWall,
+  addStairs,
+  addWindowOnWall,
   canAdjoinWall,
+  deleteOpening,
   deleteRoom,
+  deleteStairs,
+  flipDoorHinge,
+  flipDoorSwing,
   migrateGeometry,
+  moveOpening,
   resizeRoom,
+  resizeStairs,
   roomSizeInches,
+  rotateStairs,
+  setOpeningWidth,
+  toggleStairsDirection,
   translateRoom,
+  translateStairs,
 } from "@/lib/plan/room-ops";
 import { exteriorWallFloorSpan } from "@/lib/plan/derive-walls";
+import { listOpenings } from "@/lib/plan/openings";
+import { formatMeasure, parseMeasure } from "@/lib/measure";
 import type { FloorGeometry } from "@/types/plan-geometry";
 
 export type SaveStatus =
@@ -78,6 +94,10 @@ export function EditorClient({
   const [geometry, setGeometry] = useState<FloorGeometry>(migrated.geometry);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
+  const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(
+    null,
+  );
+  const [selectedStairsId, setSelectedStairsId] = useState<string | null>(null);
   const [sheet, setSheet] = useState<RoomSheetMode | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [interacting, setInteracting] = useState(false);
@@ -221,6 +241,22 @@ export function EditorClient({
     setGeometry((prev) => translateRoom(prev, roomId, dx, dy));
   }, []);
 
+  const handleMoveOpening = useCallback(
+    (openingId: string, offsetIn: number) => {
+      dirtyRef.current = true;
+      setGeometry((prev) => moveOpening(prev, openingId, offsetIn));
+    },
+    [],
+  );
+
+  const handleMoveStairs = useCallback(
+    (stairsId: string, dx: number, dy: number) => {
+      dirtyRef.current = true;
+      setGeometry((prev) => translateStairs(prev, stairsId, dx, dy));
+    },
+    [],
+  );
+
   const handleInteractionChange = useCallback((active: boolean) => {
     setInteracting(active);
     if (!active && dirtyRef.current) {
@@ -230,8 +266,19 @@ export function EditorClient({
 
   const selectedRoom = geometry.rooms.find((r) => r.id === selectedRoomId);
   const selectedWall = geometry.walls.find((w) => w.id === selectedWallId);
+  const selectedOpening = listOpenings(geometry).find(
+    (o) => o.id === selectedOpeningId,
+  );
+  const selectedStairs = geometry.stairs.find((s) => s.id === selectedStairsId);
   const wallCanAdjoin =
     selectedWallId !== null && canAdjoinWall(geometry, selectedWallId);
+
+  function clearSelection() {
+    setSelectedRoomId(null);
+    setSelectedWallId(null);
+    setSelectedOpeningId(null);
+    setSelectedStairsId(null);
+  }
 
   const openEditSheet = useCallback(() => {
     if (!selectedRoom) return;
@@ -329,13 +376,22 @@ export function EditorClient({
           <Button
             type="button"
             onClick={() => {
-              setSelectedRoomId(null);
-              setSelectedWallId(null);
+              clearSelection();
               setTyping(true);
               setSheet({ kind: "add" });
             }}
           >
             Add Room
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              clearSelection();
+              mutateGeometry(addStairs(geometry));
+            }}
+          >
+            Add Stairs
           </Button>
           {selectedRoom ? (
             <Button type="button" variant="secondary" onClick={openEditSheet}>
@@ -354,18 +410,44 @@ export function EditorClient({
             geometry={geometry}
             selectedRoomId={selectedRoomId}
             selectedWallId={selectedWallId}
+            selectedOpeningId={selectedOpeningId}
+            selectedStairsId={selectedStairsId}
             onSelectRoom={(id) => {
               setSelectedRoomId(id);
-              if (id) setSelectedWallId(null);
-              if (!id && sheet?.kind === "edit") {
-                setSheet(null);
+              if (id) {
+                setSelectedWallId(null);
+                setSelectedOpeningId(null);
+                setSelectedStairsId(null);
               }
+              if (!id && sheet?.kind === "edit") setSheet(null);
             }}
             onSelectWall={(id) => {
               setSelectedWallId(id);
-              if (id) setSelectedRoomId(null);
+              if (id) {
+                setSelectedRoomId(null);
+                setSelectedOpeningId(null);
+                setSelectedStairsId(null);
+              }
+            }}
+            onSelectOpening={(id) => {
+              setSelectedOpeningId(id);
+              if (id) {
+                setSelectedRoomId(null);
+                setSelectedWallId(null);
+                setSelectedStairsId(null);
+              }
+            }}
+            onSelectStairs={(id) => {
+              setSelectedStairsId(id);
+              if (id) {
+                setSelectedRoomId(null);
+                setSelectedWallId(null);
+                setSelectedOpeningId(null);
+              }
             }}
             onMoveRoom={handleMoveRoom}
+            onMoveOpening={handleMoveOpening}
+            onMoveStairs={handleMoveStairs}
             onInteractionChange={handleInteractionChange}
           />
         </div>
@@ -415,15 +497,193 @@ export function EditorClient({
             <p className="text-sm font-semibold text-navy">
               {selectedWall.kind === "interior" ? "Interior wall" : "Exterior wall"}
             </p>
-            {wallCanAdjoin ? (
-              <Button type="button" className="w-full" onClick={openAdjoinSheet}>
-                Add Room Here
+            <div className="flex flex-col gap-2">
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => {
+                  mutateGeometry(addDoorOnWall(geometry, selectedWall.id));
+                }}
+              >
+                Add Door
               </Button>
-            ) : (
-              <p className="text-sm text-fg-muted">
-                This wall already borders two rooms.
-              </p>
-            )}
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                onClick={() => {
+                  mutateGeometry(addWindowOnWall(geometry, selectedWall.id));
+                }}
+              >
+                Add Window
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                onClick={() => {
+                  mutateGeometry(addOpeningOnWall(geometry, selectedWall.id));
+                }}
+              >
+                Add Opening
+              </Button>
+              {wallCanAdjoin ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full"
+                  onClick={openAdjoinSheet}
+                >
+                  Add Room Here
+                </Button>
+              ) : selectedWall.roomIds.length > 1 ? (
+                <p className="text-sm text-fg-muted">
+                  Shared walls can’t take another room here.
+                </p>
+              ) : null}
+            </div>
+          </aside>
+        ) : null}
+
+        {selectedOpening && !sheet ? (
+          <aside
+            className={[
+              "flex flex-col gap-3 rounded-lg border border-border bg-elevated p-4 shadow-card",
+              "sm:max-w-sm",
+            ].join(" ")}
+            aria-label="Opening controls"
+          >
+            <p className="text-sm font-semibold text-navy">
+              {selectedOpening.kind === "door"
+                ? "Door"
+                : selectedOpening.kind === "window"
+                  ? "Window"
+                  : "Opening"}
+            </p>
+            <p className="text-sm text-fg-muted">
+              Width {formatMeasure(selectedOpening.widthIn)}
+            </p>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium text-navy">Width</span>
+              <input
+                className="min-h-[var(--sp-touch-min)] rounded-sm border border-border px-3 text-base"
+                inputMode="decimal"
+                defaultValue={formatMeasure(selectedOpening.widthIn)}
+                onBlur={(e) => {
+                  const parsed = parseMeasure(e.target.value);
+                  if (parsed.ok) {
+                    mutateGeometry(
+                      setOpeningWidth(
+                        geometry,
+                        selectedOpening.id,
+                        parsed.inches,
+                      ),
+                    );
+                  }
+                }}
+              />
+            </label>
+            {selectedOpening.kind === "door" ? (
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full"
+                  onClick={() =>
+                    mutateGeometry(flipDoorSwing(geometry, selectedOpening.id))
+                  }
+                >
+                  Flip swing
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full"
+                  onClick={() =>
+                    mutateGeometry(flipDoorHinge(geometry, selectedOpening.id))
+                  }
+                >
+                  Flip hinge
+                </Button>
+              </div>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full text-danger hover:bg-danger/5"
+              onClick={() => {
+                mutateGeometry(deleteOpening(geometry, selectedOpening.id));
+                setSelectedOpeningId(null);
+              }}
+            >
+              Delete
+            </Button>
+          </aside>
+        ) : null}
+
+        {selectedStairs && !sheet ? (
+          <aside
+            className={[
+              "flex flex-col gap-3 rounded-lg border border-border bg-elevated p-4 shadow-card",
+              "sm:max-w-sm",
+            ].join(" ")}
+            aria-label="Stairs controls"
+          >
+            <p className="text-sm font-semibold text-navy">
+              Stairs ({selectedStairs.direction.toUpperCase()})
+            </p>
+            <div className="flex flex-col gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                onClick={() =>
+                  mutateGeometry(rotateStairs(geometry, selectedStairs.id))
+                }
+              >
+                Rotate 90°
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                onClick={() =>
+                  mutateGeometry(
+                    toggleStairsDirection(geometry, selectedStairs.id),
+                  )
+                }
+              >
+                Toggle UP / DOWN
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                onClick={() => {
+                  setTyping(true);
+                  setSheet({
+                    kind: "edit",
+                    roomId: selectedStairs.id,
+                    name: "Stairs",
+                    widthIn: selectedStairs.widthIn,
+                    depthIn: selectedStairs.depthIn,
+                  });
+                }}
+              >
+                Edit size
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full text-danger hover:bg-danger/5"
+                onClick={() => {
+                  mutateGeometry(deleteStairs(geometry, selectedStairs.id));
+                  setSelectedStairsId(null);
+                }}
+              >
+                Delete
+              </Button>
+            </div>
           </aside>
         ) : null}
       </div>
@@ -458,8 +718,12 @@ export function EditorClient({
             setSelectedWallId(null);
             setSelectedRoomId(newRoom?.id ?? null);
           }}
-          onConfirmEdit={(roomId, widthIn, depthIn) => {
-            mutateGeometry(resizeRoom(geometry, roomId, widthIn, depthIn));
+          onConfirmEdit={(id, widthIn, depthIn) => {
+            if (geometry.stairs.some((s) => s.id === id)) {
+              mutateGeometry(resizeStairs(geometry, id, widthIn, depthIn));
+            } else {
+              mutateGeometry(resizeRoom(geometry, id, widthIn, depthIn));
+            }
             setSheet(null);
           }}
           onDelete={(roomId) => {

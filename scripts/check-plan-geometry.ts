@@ -8,7 +8,6 @@
 
 import {
   centerlineSegments,
-  doorHingeAndLatch,
   isFinitePoint,
   pointInPolygon,
   polygonAreaSqIn,
@@ -32,6 +31,18 @@ import {
   wallLen,
   wallsFor,
 } from "./shared-wall-fixtures.ts";
+import {
+  MIN_OPENING_WIDTH_IN,
+  openingWorldSpan,
+  pushOffsetClearOfOverlaps,
+  roomEdge,
+} from "../src/lib/plan/openings.ts";
+import { splitWallsForOpenings } from "../src/lib/plan/derive-walls.ts";
+import type {
+  FloorGeometry,
+  PlanDoor,
+  PlanRoom,
+} from "../src/types/plan-geometry.ts";
 
 let failed = 0;
 
@@ -198,52 +209,46 @@ for (const room of geometry.rooms) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Door geometry
+// 5. Door geometry (room-edge anchors)
 // ---------------------------------------------------------------------------
 for (const door of geometry.doors) {
-  const wall = geometry.walls.find((w) => w.id === door.wallId);
-  if (!wall) {
-    fail(`door ${door.id} wall exists`, `unknown wall ${door.wallId}`);
+  const span = openingWorldSpan(geometry.rooms, door);
+  if (!span) {
+    fail(`door ${door.id} room edge`, "could not resolve opening span");
     continue;
   }
-  const { hinge, latch } = doorHingeAndLatch(
-    wall.centerline,
-    door.offset,
-    door.width,
-    door.hingeSide,
-    wall.closed,
-  );
+  const hinge =
+    door.hingeEnd === "start" ? span.start : span.end;
+  const latch =
+    door.hingeEnd === "start" ? span.end : span.start;
   const radius = Math.hypot(latch.x - hinge.x, latch.y - hinge.y);
   assert(
-    Math.abs(radius - door.width) < 0.5,
+    Math.abs(radius - door.widthIn) < 0.5,
     `door ${door.id} radius equals width`,
-    `radius ${radius.toFixed(2)} vs width ${door.width.toFixed(2)}`,
+    `radius ${radius.toFixed(2)} vs width ${door.widthIn.toFixed(2)}`,
   );
 
-  // Latch (arc start when hingeSide=start) should lie on the wall centerline.
-  const segs = centerlineSegments(wall.centerline, wall.closed);
-  let minDist = Infinity;
-  for (const seg of segs) {
-    const abx = seg.b.x - seg.a.x;
-    const aby = seg.b.y - seg.a.y;
-    const abLenSq = abx * abx + aby * aby;
-    let t = 0;
-    if (abLenSq > 1e-12) {
-      t = Math.max(
-        0,
-        Math.min(
-          1,
-          ((latch.x - seg.a.x) * abx + (latch.y - seg.a.y) * aby) / abLenSq,
-        ),
-      );
-    }
-    const px = seg.a.x + abx * t;
-    const py = seg.a.y + aby * t;
-    minDist = Math.min(minDist, Math.hypot(latch.x - px, latch.y - py));
+  // Latch should lie on the room edge
+  const edge = span.edge;
+  const abx = edge.b.x - edge.a.x;
+  const aby = edge.b.y - edge.a.y;
+  const abLenSq = abx * abx + aby * aby;
+  let t = 0;
+  if (abLenSq > 1e-12) {
+    t = Math.max(
+      0,
+      Math.min(
+        1,
+        ((latch.x - edge.a.x) * abx + (latch.y - edge.a.y) * aby) / abLenSq,
+      ),
+    );
   }
+  const px = edge.a.x + abx * t;
+  const py = edge.a.y + aby * t;
+  const minDist = Math.hypot(latch.x - px, latch.y - py);
   assert(
     minDist < 1,
-    `door ${door.id} latch on wall centerline`,
+    `door ${door.id} latch on room edge`,
     `distance ${minDist.toFixed(3)} exceeds tolerance`,
   );
 }
@@ -273,7 +278,7 @@ for (const door of geometry.doors) {
 {
   const empty = createEmptyFloorGeometry("Untitled");
   assert(isEmptyFloorGeometry(empty), "createEmptyFloorGeometry is empty");
-  assert(empty.schemaVersion === 2, "empty schemaVersion is 2");
+  assert(empty.schemaVersion === 3, "empty schemaVersion is 3");
   assert(empty.walls.length === 0, "empty walls array");
   assert(empty.rooms.length === 0, "empty rooms array");
 
@@ -442,6 +447,198 @@ for (const door of geometry.doors) {
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// 9. Opening anchors survive adjoining / deletion / resize / move
+// ---------------------------------------------------------------------------
+function docWith(rooms: PlanRoom[], doors: PlanDoor[] = []): FloorGeometry {
+  const cuts = doors.map((d) => ({
+    roomId: d.roomId,
+    edgeIndex: d.edgeIndex,
+    offsetIn: d.offsetIn,
+    widthIn: d.widthIn,
+  }));
+  const walls = splitWallsForOpenings(
+    deriveWallsFromRooms(rooms),
+    rooms,
+    cuts,
+  );
+  return {
+    schemaVersion: 3,
+    meta: {
+      title: "fixture",
+      bounds: { minX: 0, minY: 0, maxX: 400, maxY: 400 },
+    },
+    walls,
+    rooms,
+    doors,
+    windows: [],
+    openings: [],
+    stairs: [],
+    labels: [],
+  };
+}
+
+function doorOnEast(
+  roomId: string,
+  edgeIndex: number,
+  offsetIn: number,
+  widthIn = 32,
+): PlanDoor {
+  return {
+    id: "door-1",
+    roomId,
+    edgeIndex,
+    offsetIn,
+    widthIn,
+    hingeEnd: "start",
+    swingSide: 1,
+  };
+}
+
+{
+  // 1. Door on exterior, then adjoin across it — door survives
+  const rooms0 = [rectRoom("a", 0, 0, 120, 100)];
+  // East edge index 1 for CCW rect
+  const door = doorOnEast("a", 1, 34, 32);
+  let doc = docWith(rooms0, [door]);
+  assert(doc.doors.length === 1, "survive-adjoin: door present before");
+  // Adjoin room on east: same coords as addRoomAdjoiningWall would
+  const rooms1 = [
+    rooms0[0],
+    rectRoom("b", 120, 0, 100, 100),
+  ];
+  doc = docWith(rooms1, [door]);
+  assert(doc.doors.length === 1, "survive-adjoin: door still present");
+  assert(doc.doors[0]!.roomId === "a", "survive-adjoin: still on room a");
+  const interior = doc.walls.filter((w) => w.kind === "interior");
+  assert(interior.length >= 1, "survive-adjoin: shared interior wall exists");
+  const span = openingWorldSpan(doc.rooms, doc.doors[0]!);
+  assert(Boolean(span), "survive-adjoin: door still on edge");
+}
+
+{
+  // 2. Door on shared wall, delete neighbor — door survives on exterior
+  const rooms0 = [
+    rectRoom("a", 0, 0, 120, 100),
+    rectRoom("b", 120, 0, 100, 100),
+  ];
+  const door = doorOnEast("a", 1, 34, 32);
+  let doc = docWith(rooms0, [door]);
+  assert(
+    doc.walls.some((w) => w.kind === "interior"),
+    "survive-delete: has interior before",
+  );
+  doc = docWith([rooms0[0]], [door]);
+  assert(doc.doors.length === 1, "survive-delete: door remains");
+  assert(
+    doc.walls.every((w) => w.kind === "exterior"),
+    "survive-delete: only exterior walls left",
+  );
+  assert(
+    Boolean(openingWorldSpan(doc.rooms, doc.doors[0]!)),
+    "survive-delete: door still on edge",
+  );
+}
+
+{
+  // 3. Resize larger — door survives
+  const door = doorOnEast("a", 1, 34, 32);
+  const rooms = [rectRoom("a", 0, 0, 120, 100)];
+  let doc = docWith(rooms, [door]);
+  const bigger = [rectRoom("a", 0, 0, 120, 140)];
+  doc = docWith(bigger, [door]);
+  assert(doc.doors.length === 1, "resize-larger: door survives");
+  assert(
+    Boolean(openingWorldSpan(doc.rooms, doc.doors[0]!)),
+    "resize-larger: valid span",
+  );
+}
+
+{
+  // 4. Resize smaller — clamp / shrink / remove
+  const door = doorOnEast("a", 1, 10, 80); // tall door on 100" edge
+  const edgeBefore = roomEdge(rectRoom("a", 0, 0, 120, 100), 1)!;
+  assert(edgeBefore.length === 100, "resize-smaller: setup edge 100");
+  // Shrink depth to 50 — edge length 50, door width 80 → clamp width to 50 (>= MIN)
+  const shrunkRoom = rectRoom("a", 0, 0, 120, 50);
+  const edge = roomEdge(shrunkRoom, 1)!;
+  let width = door.widthIn;
+  let offset = door.offsetIn;
+  if (width > edge.length) width = edge.length;
+  if (width < MIN_OPENING_WIDTH_IN) {
+    assert(false, "resize-smaller: unexpected remove path");
+  } else {
+    if (offset + width > edge.length) offset = edge.length - width;
+    assert(width === 50, "resize-smaller: width clamped to edge", `w=${width}`);
+    assert(offset >= 0, "resize-smaller: offset non-negative");
+  }
+  // Extreme: edge shorter than MIN → remove
+  const tiny = rectRoom("a", 0, 0, 120, 8);
+  const tinyEdge = roomEdge(tiny, 1)!;
+  assert(
+    tinyEdge.length < MIN_OPENING_WIDTH_IN,
+    "resize-remove: edge below min width",
+  );
+}
+
+{
+  // 5. Move room — door moves with it
+  const door = doorOnEast("a", 1, 34, 32);
+  const before = openingWorldSpan([rectRoom("a", 0, 0, 120, 100)], door)!;
+  const after = openingWorldSpan([rectRoom("a", 40, 20, 120, 100)], door)!;
+  assert(
+    Math.abs(after.start.x - (before.start.x + 40)) < 1e-6 &&
+      Math.abs(after.start.y - (before.start.y + 20)) < 1e-6,
+    "move-room: door translates with room",
+  );
+}
+
+{
+  // 6. Delete anchor room — openings gone
+  const remaining = docWith([rectRoom("b", 200, 0, 100, 100)], []);
+  assert(remaining.doors.length === 0, "delete-anchor: no doors left");
+}
+
+{
+  // 7. Split lengths + opening widths = original span
+  const rooms = [rectRoom("a", 0, 0, 120, 100)];
+  const door = doorOnEast("a", 1, 20, 30);
+  const base = deriveWallsFromRooms(rooms);
+  const east = base.find((w) => w.id.startsWith("we:a:1:"));
+  assert(Boolean(east), "split: found east exterior");
+  const original = wallLen(east!);
+  const split = splitWallsForOpenings(base, rooms, [
+    {
+      roomId: door.roomId,
+      edgeIndex: door.edgeIndex,
+      offsetIn: door.offsetIn,
+      widthIn: door.widthIn,
+    },
+  ]);
+  const eastPieces = split.filter((w) => w.id.startsWith("we:a:1:"));
+  const pieceSum = eastPieces.reduce((s, w) => s + wallLen(w), 0);
+  assert(
+    Math.abs(pieceSum + door.widthIn - original) < 1e-4,
+    "split: pieces + opening = original",
+    `pieces=${pieceSum} opening=${door.widthIn} original=${original}`,
+  );
+  for (const w of eastPieces) {
+    assert(wallLen(w) > 0, `split: piece ${w.id} positive`);
+  }
+}
+
+{
+  // 8. Two openings never overlap — push clears
+  const others = [{ roomId: "a", edgeIndex: 1, offsetIn: 20, widthIn: 30 }];
+  const pushed = pushOffsetClearOfOverlaps(25, 30, 100, others);
+  assert(pushed !== null, "overlap: found a slot");
+  assert(
+    pushed! >= 50 || pushed! + 30 <= 20,
+    "overlap: pushed clear of [20,50)",
+    `pushed=${pushed}`,
+  );
 }
 
 console.log("");

@@ -3,22 +3,27 @@
  * schemaVersion lets us evolve the format without a hard cutover.
  *
  * Units: all coordinates and lengths are inches.
- * Drawing space uses the same inches 1:1 (see plan-style tokens).
  *
- * schemaVersion 2: rooms are authoritative; walls are derived from room edges
- * (see src/lib/plan/derive-walls.ts). schemaVersion 1 stored per-room wall rings.
+ * schemaVersion 2: rooms authoritative; walls derived (derive-walls.ts).
+ * schemaVersion 3: openings anchored to room edges (not derived wall ids),
+ * so they survive adjoining / neighbor deletion. Walls still derived; opening
+ * gaps are cut into derived spans at finalize time.
  */
 
 export type PlanPoint = { x: number; y: number };
 
 export type WallKind = "exterior" | "interior";
 
-/** Which end of an opening along the wall direction is the hinge. */
-export type HingeSide = "start" | "end";
+/**
+ * Which end of an opening span (along the room edge from start→end vertex)
+ * holds the door hinge.
+ */
+export type HingeEnd = "start" | "end";
 
 /**
  * Swing into the room on the left (+1) or right (-1) of the wall direction
  * when walking from opening-start toward opening-end.
+ * Default +1 = into the anchor room for a CCW polygon.
  */
 export type SwingSide = 1 | -1;
 
@@ -37,7 +42,10 @@ export type PlanRoomType =
 export type PlanRoomCategory = "living" | "wet" | "service";
 
 export type PlanWall = {
-  /** Stable id — doors/windows reference this. See derive-walls id scheme. */
+  /**
+   * Derived id (see derive-walls.ts). Opening-split segments append `~{i}`
+   * to the parent span id. Openings themselves do NOT store wall ids.
+   */
   id: string;
   /** Centerline polyline in inches. */
   centerline: PlanPoint[];
@@ -57,53 +65,53 @@ export type PlanRoom = {
   id: string;
   name: string;
   type: PlanRoomType;
-  /** Tonal fill category (living / wet / service). */
   category: PlanRoomCategory;
   /** Interior floor polygon (inside face of walls). */
   polygon: PlanPoint[];
-  /** Label anchor; required for L-shapes where centroid is unreliable. */
   labelAnchor: PlanPoint;
 };
 
-export type PlanDoor = {
+/**
+ * Anchor for doors / windows / openings on a room polygon edge.
+ * Survives wall-id churn when neighbors are added or deleted.
+ */
+export type RoomEdgeAnchor = {
+  roomId: string;
+  /** Polygon edge index: vertex i → vertex i+1. */
+  edgeIndex: number;
+  /** Inches along the edge from the start vertex to the opening's start. */
+  offsetIn: number;
+  /** Opening width along the edge, inches. */
+  widthIn: number;
+};
+
+export type PlanDoor = RoomEdgeAnchor & {
   id: string;
-  /** Host wall id. */
-  wallId: string;
-  /** Distance along wall centerline from its start to the opening's start end. */
-  offset: number;
-  /** Opening width along the wall, inches. */
-  width: number;
-  hingeSide: HingeSide;
+  hingeEnd: HingeEnd;
   swingSide: SwingSide;
-  /** Exterior entry vs interior passage (affects opening cut weight). */
-  exterior: boolean;
 };
 
-export type PlanWindow = {
+export type PlanWindow = RoomEdgeAnchor & {
   id: string;
-  wallId: string;
-  /** Distance along wall centerline to the window's start end. */
-  offset: number;
-  width: number;
 };
 
-/** Pass-through opening (cased opening without a door leaf). */
-export type PlanOpening = {
+/** Pass-through opening (gap with no leaf or panes). */
+export type PlanOpening = RoomEdgeAnchor & {
   id: string;
-  wallId: string;
-  offset: number;
-  width: number;
 };
+
+export type StairRotationDeg = 0 | 90 | 180 | 270;
 
 export type PlanStairs = {
   id: string;
-  /** Outline of the stair run / well. */
-  polygon: PlanPoint[];
-  /** Direction of ascent as a unit-ish vector in plan space. */
-  direction: PlanPoint;
+  /** Anchor corner of the un-rotated axis-aligned footprint. */
+  origin: PlanPoint;
+  widthIn: number;
+  depthIn: number;
+  rotationDeg: StairRotationDeg;
+  direction: "up" | "down";
 };
 
-/** Free-floating annotation not tied to a room centroid. */
 export type PlanLabel = {
   id: string;
   text: string;
@@ -112,10 +120,9 @@ export type PlanLabel = {
 };
 
 export type FloorGeometry = {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   meta: {
     title: string;
-    /** Content bounds before sheet margin. */
     bounds: {
       minX: number;
       minY: number;
@@ -132,7 +139,6 @@ export type FloorGeometry = {
   labels: PlanLabel[];
 };
 
-/** Default empty-canvas bounds in inches (40' × 30'). Avoids NaN viewBox. */
 export const EMPTY_GEOMETRY_BOUNDS = {
   minX: 0,
   minY: 0,
@@ -140,10 +146,9 @@ export const EMPTY_GEOMETRY_BOUNDS = {
   maxY: 360,
 } as const;
 
-/** Valid empty geometry document for a brand-new floor. */
 export function createEmptyFloorGeometry(title = ""): FloorGeometry {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     meta: {
       title,
       bounds: { ...EMPTY_GEOMETRY_BOUNDS },

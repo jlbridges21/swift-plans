@@ -345,13 +345,19 @@ export function deriveWallsFromRooms(rooms: PlanRoom[]): PlanWall[] {
   return walls;
 }
 
+/** Strip opening-split suffix (`~0`) to recover the parent span id. */
+export function parentWallId(id: string): string {
+  const i = id.indexOf("~");
+  return i >= 0 ? id.slice(0, i) : id;
+}
+
 /** Parse an exterior wall id into room/edge/sub indices. */
 export function parseExteriorWallId(
   id: string,
 ): { roomId: string; edgeIndex: number; subIndex: number } | null {
-  // we:{roomId}:{edgeIndex}:{subIndex} — roomId may contain colons (uuid does not)
-  if (!id.startsWith("we:")) return null;
-  const parts = id.split(":");
+  const base = parentWallId(id);
+  if (!base.startsWith("we:")) return null;
+  const parts = base.split(":");
   if (parts.length < 4) return null;
   const subIndex = Number(parts[parts.length - 1]);
   const edgeIndex = Number(parts[parts.length - 2]);
@@ -447,4 +453,187 @@ export function exteriorWallFloorSpan(
     outward: outwardNormal(a, b),
     length: Math.hypot(rawB.x - rawA.x, rawB.y - rawA.y),
   };
+}
+
+type OpeningCut = {
+  roomId: string;
+  edgeIndex: number;
+  offsetIn: number;
+  widthIn: number;
+};
+
+/**
+ * Split derived wall spans at openings that fall on them, leaving true gaps.
+ * Split segment ids are `{parentId}~{i}` so they stay traceable to the parent.
+ *
+ * Handles open 2-point walls and multi-point / closed polylines (per segment).
+ * Axis-aligned segments only.
+ */
+export function splitWallsForOpenings(
+  walls: PlanWall[],
+  rooms: PlanRoom[],
+  openings: OpeningCut[],
+): PlanWall[] {
+  if (openings.length === 0) return walls;
+
+  const roomById = new Map(rooms.map((r) => [r.id, r]));
+  const out: PlanWall[] = [];
+
+  for (const wall of walls) {
+    const pts = wall.centerline;
+    if (pts.length < 2) {
+      out.push(wall);
+      continue;
+    }
+
+    const segs: { a: PlanPoint; b: PlanPoint }[] = [];
+    for (let i = 0; i < pts.length - 1; i += 1) {
+      segs.push({ a: pts[i], b: pts[i + 1] });
+    }
+    if (wall.closed && pts.length > 2) {
+      segs.push({ a: pts[pts.length - 1], b: pts[0] });
+    }
+
+    // Collect all leftover pieces across segments
+    const pieces: PlanPoint[][] = [];
+    let anyCut = false;
+
+    for (const seg of segs) {
+      const c0 = seg.a;
+      const c1 = seg.b;
+      const wdx = c1.x - c0.x;
+      const wdy = c1.y - c0.y;
+      const wLen = Math.hypot(wdx, wdy);
+      if (wLen < MIN_LEN) continue;
+
+      const isH = nearlyEqual(wdy, 0);
+      const isV = nearlyEqual(wdx, 0);
+      if (!isH && !isV) {
+        pieces.push([c0, c1]);
+        continue;
+      }
+
+      const half = wall.thickness / 2;
+      let floorA = c0;
+      let floorB = c1;
+      if (wall.kind === "exterior" && wall.roomIds[0]) {
+        const room = roomById.get(wall.roomIds[0]);
+        if (room) {
+          const cx =
+            room.polygon.reduce((s, p) => s + p.x, 0) / room.polygon.length;
+          const cy =
+            room.polygon.reduce((s, p) => s + p.y, 0) / room.polygon.length;
+          const mid = { x: (c0.x + c1.x) / 2, y: (c0.y + c1.y) / 2 };
+          const toRoom = { x: cx - mid.x, y: cy - mid.y };
+          const nLen = Math.hypot(toRoom.x, toRoom.y) || 1;
+          const inward = { x: toRoom.x / nLen, y: toRoom.y / nLen };
+          floorA = {
+            x: c0.x + inward.x * half,
+            y: c0.y + inward.y * half,
+          };
+          floorB = {
+            x: c1.x + inward.x * half,
+            y: c1.y + inward.y * half,
+          };
+        }
+      }
+
+      const fdx = floorB.x - floorA.x;
+      const fdy = floorB.y - floorA.y;
+      const fLen = Math.hypot(fdx, fdy) || 1;
+      const fdir = { x: fdx / fLen, y: fdy / fLen };
+
+      const gaps: { t0: number; t1: number }[] = [];
+      for (const op of openings) {
+        if (wall.roomIds.length > 0 && !wall.roomIds.includes(op.roomId)) {
+          continue;
+        }
+        const room = roomById.get(op.roomId);
+        if (!room) continue;
+        const poly = room.polygon;
+        if (op.edgeIndex < 0 || op.edgeIndex >= poly.length) continue;
+        const ea = poly[op.edgeIndex];
+        const eb = poly[(op.edgeIndex + 1) % poly.length];
+        const edx = eb.x - ea.x;
+        const edy = eb.y - ea.y;
+        const eLen = Math.hypot(edx, edy);
+        if (eLen < MIN_LEN) continue;
+
+        const o0 = {
+          x: ea.x + (edx / eLen) * op.offsetIn,
+          y: ea.y + (edy / eLen) * op.offsetIn,
+        };
+        const o1 = {
+          x: ea.x + (edx / eLen) * (op.offsetIn + op.widthIn),
+          y: ea.y + (edy / eLen) * (op.offsetIn + op.widthIn),
+        };
+
+        const floorC = isH ? floorA.y : floorA.x;
+        const openC = isH ? o0.y : o0.x;
+        // Allow small tolerance for inset floor vs room edge (sample hand walls)
+        if (Math.abs(floorC - openC) > half + 1) continue;
+        if (isH && !nearlyEqual(o0.y, o1.y)) continue;
+        if (isV && !nearlyEqual(o0.x, o1.x)) continue;
+
+        const proj = (p: PlanPoint) =>
+          (p.x - floorA.x) * fdir.x + (p.y - floorA.y) * fdir.y;
+        let t0 = proj(o0);
+        let t1 = proj(o1);
+        if (t1 < t0) [t0, t1] = [t1, t0];
+        t0 = Math.max(0, t0);
+        t1 = Math.min(fLen, t1);
+        if (t1 - t0 < MIN_LEN) continue;
+        gaps.push({ t0, t1 });
+      }
+
+      if (gaps.length === 0) {
+        pieces.push([c0, c1]);
+        continue;
+      }
+      anyCut = true;
+      gaps.sort((a, b) => a.t0 - b.t0 || a.t1 - b.t1);
+      const merged: { t0: number; t1: number }[] = [];
+      for (const g of gaps) {
+        const last = merged[merged.length - 1];
+        if (!last || g.t0 > last.t1 + EPS) merged.push({ ...g });
+        else last.t1 = Math.max(last.t1, g.t1);
+      }
+      const remainders = subtractIntervals(0, fLen, merged);
+      const scale = wLen / fLen;
+      for (const rem of remainders) {
+        if (rem.t1 - rem.t0 < MIN_LEN) continue;
+        const s0 = rem.t0 * scale;
+        const s1 = rem.t1 * scale;
+        pieces.push([
+          {
+            x: c0.x + (wdx / wLen) * s0,
+            y: c0.y + (wdy / wLen) * s0,
+          },
+          {
+            x: c0.x + (wdx / wLen) * s1,
+            y: c0.y + (wdy / wLen) * s1,
+          },
+        ]);
+      }
+    }
+
+    if (!anyCut) {
+      out.push(wall);
+      continue;
+    }
+
+    let segIndex = 0;
+    for (const piece of pieces) {
+      if (wallLength(piece) < MIN_LEN) continue;
+      out.push({
+        ...wall,
+        id: `${parentWallId(wall.id)}~${segIndex}`,
+        centerline: piece,
+        closed: false,
+      });
+      segIndex += 1;
+    }
+  }
+
+  return out;
 }

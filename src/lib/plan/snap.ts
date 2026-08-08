@@ -6,11 +6,8 @@
  * stays consistent across zoom levels.
  */
 
-import type {
-  FloorGeometry,
-  PlanPoint,
-  PlanRoom,
-} from "@/types/plan-geometry";
+import type { FloorGeometry, PlanPoint, PlanRoom } from "../../types/plan-geometry";
+import { stairsPolygon } from "./stairs";
 
 /**
  * Screen-space snap distance in CSS pixels.
@@ -42,6 +39,20 @@ function roomSegments(room: PlanRoom, dx = 0, dy = 0): Seg[] {
   return segs;
 }
 
+function polySegments(poly: PlanPoint[]): Seg[] {
+  const segs: Seg[] = [];
+  for (let i = 0; i < poly.length; i += 1) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    if (Math.abs(a.y - b.y) < 1e-6 && Math.abs(a.x - b.x) >= 1e-6) {
+      segs.push({ a, b, axis: "h" });
+    } else if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) >= 1e-6) {
+      segs.push({ a, b, axis: "v" });
+    }
+  }
+  return segs;
+}
+
 function roomCorners(room: PlanRoom, dx = 0, dy = 0): PlanPoint[] {
   return room.polygon.map((p) => ({ x: p.x + dx, y: p.y + dy }));
 }
@@ -59,31 +70,19 @@ function intervalsOverlap(
   return Math.min(hiA, hiB) - Math.max(loA, loB) > 1e-6;
 }
 
-/**
- * Given a proposed translation, return a snapped translation and overlay guides.
- * Snapped coordinates are exact (no residual gap).
- */
-export function snapRoomTranslation(
-  geometry: FloorGeometry,
-  roomId: string,
+function snapSegmentsToRooms(
+  movingSegs: Seg[],
+  movingCorners: PlanPoint[],
+  otherRooms: PlanRoom[],
   dx: number,
   dy: number,
   thresholdIn: number,
 ): { dx: number; dy: number; guides: SnapGuide[] } {
-  const room = geometry.rooms.find((r) => r.id === roomId);
-  if (!room || thresholdIn <= 0) {
+  if (otherRooms.length === 0 || thresholdIn <= 0) {
     return { dx, dy, guides: [] };
   }
-
-  const others = geometry.rooms.filter((r) => r.id !== roomId);
-  if (others.length === 0) {
-    return { dx, dy, guides: [] };
-  }
-
-  const movingSegs = roomSegments(room, dx, dy);
-  const movingCorners = roomCorners(room, dx, dy);
-  const otherSegs = others.flatMap((r) => roomSegments(r));
-  const otherCorners = others.flatMap((r) => roomCorners(r));
+  const otherSegs = otherRooms.flatMap((r) => roomSegments(r));
+  const otherCorners = otherRooms.flatMap((r) => roomCorners(r));
 
   let bestDx = dx;
   let bestDy = dy;
@@ -93,7 +92,6 @@ export function snapRoomTranslation(
   let snapX: number | null = null;
   let snapY: number | null = null;
 
-  // Edge-to-edge: collinear horizontal → snap Y; vertical → snap X
   for (const ms of movingSegs) {
     for (const os of otherSegs) {
       if (ms.axis !== os.axis) continue;
@@ -104,7 +102,6 @@ export function snapRoomTranslation(
           const m1 = Math.max(ms.a.x, ms.b.x);
           const o0 = Math.min(os.a.x, os.b.x);
           const o1 = Math.max(os.a.x, os.b.x);
-          // Prefer overlapping projections, but also allow near-touching ends
           if (
             intervalsOverlap(m0, m1, o0, o1) ||
             Math.abs(m1 - o0) < thresholdIn ||
@@ -136,7 +133,6 @@ export function snapRoomTranslation(
     }
   }
 
-  // Corner-to-corner
   for (const mc of movingCorners) {
     for (const oc of otherCorners) {
       const gx = oc.x - mc.x;
@@ -166,4 +162,57 @@ export function snapRoomTranslation(
   }
 
   return { dx: bestDx, dy: bestDy, guides };
+}
+
+/**
+ * Given a proposed translation, return a snapped translation and overlay guides.
+ * Snapped coordinates are exact (no residual gap).
+ */
+export function snapRoomTranslation(
+  geometry: FloorGeometry,
+  roomId: string,
+  dx: number,
+  dy: number,
+  thresholdIn: number,
+): { dx: number; dy: number; guides: SnapGuide[] } {
+  const room = geometry.rooms.find((r) => r.id === roomId);
+  if (!room || thresholdIn <= 0) {
+    return { dx, dy, guides: [] };
+  }
+  const others = geometry.rooms.filter((r) => r.id !== roomId);
+  return snapSegmentsToRooms(
+    roomSegments(room, dx, dy),
+    roomCorners(room, dx, dy),
+    others,
+    dx,
+    dy,
+    thresholdIn,
+  );
+}
+
+/** Snap stairs footprint edges/corners to nearby room edges. */
+export function snapStairsTranslation(
+  geometry: FloorGeometry,
+  stairsId: string,
+  dx: number,
+  dy: number,
+  thresholdIn: number,
+): { dx: number; dy: number; guides: SnapGuide[] } {
+  const stair = geometry.stairs.find((s) => s.id === stairsId);
+  if (!stair || thresholdIn <= 0) {
+    return { dx, dy, guides: [] };
+  }
+  const moved = {
+    ...stair,
+    origin: { x: stair.origin.x + dx, y: stair.origin.y + dy },
+  };
+  const poly = stairsPolygon(moved);
+  return snapSegmentsToRooms(
+    polySegments(poly),
+    poly,
+    geometry.rooms,
+    dx,
+    dy,
+    thresholdIn,
+  );
 }
