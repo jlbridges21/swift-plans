@@ -1,6 +1,6 @@
 "use server";
 
-import { requireUser } from "@/lib/auth/session";
+import { getUser } from "@/lib/auth/session";
 import { createClient } from "@/lib/supabase/server";
 
 export type BrandingRow = {
@@ -24,7 +24,13 @@ const EMPTY: BrandingRow = {
 };
 
 export async function getBrandingSettings(): Promise<BrandingResult> {
-  const user = await requireUser();
+  const user = await getUser();
+  if (!user) {
+    return {
+      ok: false,
+      error: "Your session expired. Sign in again to manage branding.",
+    };
+  }
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("branding_settings")
@@ -42,7 +48,13 @@ export async function saveBrandingSettings(input: {
   enabled: boolean;
   logoUrl: string | null;
 }): Promise<BrandingResult> {
-  const user = await requireUser();
+  const user = await getUser();
+  if (!user) {
+    return {
+      ok: false,
+      error: "Your session expired. Sign in again to save branding.",
+    };
+  }
   const supabase = await createClient();
   const row = {
     owner_id: user.id,
@@ -58,7 +70,7 @@ export async function saveBrandingSettings(input: {
     .select("company_name, logo_url, website, footer_text, enabled")
     .single();
   if (error || !data) {
-    return { ok: false, error: "Could not save branding." };
+    return { ok: false, error: "Could not save branding. Try again." };
   }
   return { ok: true, branding: data };
 }

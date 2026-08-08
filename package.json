@@ -10,7 +10,8 @@
     "check:plan-geometry": "node --experimental-strip-types scripts/check-plan-geometry.ts",
     "check:measure": "node --experimental-strip-types scripts/check-measure.ts",
     "check:hit-test": "node --experimental-strip-types scripts/check-hit-test.ts",
-    "check:export": "node scripts/run-check-export.cjs"
+    "check:export": "node scripts/run-check-export.cjs",
+    "check:publish": "node --experimental-strip-types scripts/check-publish.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

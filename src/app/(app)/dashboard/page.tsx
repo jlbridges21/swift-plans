@@ -26,7 +26,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
   let projectQuery = supabase
     .from("projects")
-    .select("id, name, updated_at, created_at")
+    .select("id, name, updated_at, created_at, publish_status, public_slug")
     .eq("owner_id", user.id);
 
   if (sort === "name") {
@@ -113,6 +113,9 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           ? "—"
           : `${Math.round(area).toLocaleString()} sq ft`,
       updatedLabel: formatRelativeTime(p.updated_at),
+      publishStatus:
+        p.publish_status === "published" ? "published" : "draft",
+      publicSlug: p.public_slug as string,
     };
   });
 

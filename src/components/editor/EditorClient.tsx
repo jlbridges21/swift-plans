@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -18,6 +19,7 @@ import {
   EditorContextMenu,
   type ContextMenuItem,
 } from "@/components/editor/EditorContextMenu";
+import { PublishControls } from "@/components/projects/PublishControls";
 import {
   RoomSheet,
   type RoomSheetMode,
@@ -92,7 +94,8 @@ export type SaveStatus =
   | "saving"
   | "dirty"
   | "error"
-  | "error-retrying";
+  | "error-retrying"
+  | "auth";
 
 type FloorSummary = {
   id: string;
@@ -107,6 +110,8 @@ type EditorClientProps = {
   initialFloorId: string;
   initialFloors: FloorSummary[];
   initialGeometries: Record<string, FloorGeometry>;
+  initialPublishStatus: "draft" | "published";
+  publicSlug: string;
 };
 
 const WALL_THICKNESS_PRESETS = [3.5, 4, 4.5, 6, 8] as const;
@@ -133,6 +138,8 @@ function statusLabel(status: SaveStatus): string {
       return "Couldn’t save — check your connection. Your edits are safe.";
     case "error-retrying":
       return "Save failed — retrying…";
+    case "auth":
+      return "Session expired — sign in again. Your edits are still here.";
   }
 }
 
@@ -195,7 +202,10 @@ export function EditorClient({
   initialFloorId,
   initialFloors,
   initialGeometries,
+  initialPublishStatus,
+  publicSlug,
 }: EditorClientProps) {
+  const router = useRouter();
   const initial = buildInitialHistories(
     initialFloors,
     initialGeometries,
@@ -319,6 +329,8 @@ export function EditorClient({
     try {
       let hadError = false;
 
+      let authExpired = false;
+
       if (saveGeometry) {
         const result = await saveFloorGeometry(floorId, snapshot);
         if (result.ok) {
@@ -328,6 +340,7 @@ export function EditorClient({
           migrateSaveFloorsRef.current.delete(floorId);
         } else {
           hadError = true;
+          if (result.code === "auth") authExpired = true;
         }
       }
 
@@ -342,6 +355,7 @@ export function EditorClient({
           }
         } else {
           hadError = true;
+          if (result.code === "auth") authExpired = true;
         }
       }
 
@@ -357,6 +371,9 @@ export function EditorClient({
             void performSaveRef.current();
           }, SAVE_DEBOUNCE_MS);
         }
+      } else if (authExpired) {
+        clearSaveTimer();
+        setSaveStatus("auth");
       } else {
         failCountRef.current += 1;
         setSaveStatus(failCountRef.current >= 3 ? "error" : "error-retrying");
@@ -1269,6 +1286,12 @@ export function EditorClient({
             className="shrink-0 text-left text-xs text-fg-muted sm:text-sm"
             aria-live="polite"
             onClick={() => {
+              if (saveStatus === "auth") {
+                router.push(
+                  `/sign-in?next=${encodeURIComponent(`/editor/${projectId}`)}`,
+                );
+                return;
+              }
               if (saveStatus === "error" || saveStatus === "error-retrying") {
                 failCountRef.current = 0;
                 backoffRef.current = 1000;
@@ -1278,6 +1301,28 @@ export function EditorClient({
           >
             {statusLabel(saveStatus)}
           </button>
+        </div>
+        {saveStatus === "auth" ? (
+          <div className="flex flex-wrap items-center gap-2 border-t border-border bg-tinted px-3 py-2 sm:px-4">
+            <p className="text-sm text-navy">
+              Your session expired. Sign in again to keep saving — edits on this
+              device are still here.
+            </p>
+            <Link
+              href={`/sign-in?next=${encodeURIComponent(`/editor/${projectId}`)}`}
+              className="inline-flex min-h-[44px] items-center rounded-sm bg-accent px-4 text-sm font-medium text-accent-fg"
+            >
+              Sign in
+            </Link>
+          </div>
+        ) : null}
+        <div className="border-t border-border px-3 py-2 sm:px-4">
+          <PublishControls
+            projectId={projectId}
+            initialStatus={initialPublishStatus}
+            publicSlug={publicSlug}
+            compact
+          />
         </div>
       </header>
 

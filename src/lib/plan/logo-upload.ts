@@ -43,7 +43,10 @@ export async function uploadBrandingLogo(
     .from("branding-logos")
     .upload(path, file, { upsert: true, contentType: file.type });
   if (error) {
-    return { ok: false, error: "Could not upload logo." };
+    return {
+      ok: false,
+      error: "Could not upload the logo. Check your connection and try again.",
+    };
   }
   const { data } = supabase.storage.from("branding-logos").getPublicUrl(path);
   return { ok: true, publicUrl: `${data.publicUrl}?t=${Date.now()}` };

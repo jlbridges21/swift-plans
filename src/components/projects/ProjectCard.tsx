@@ -5,6 +5,7 @@ import {
   DeleteProjectForm,
   RenameProjectForm,
 } from "@/components/projects/ProjectManageForms";
+import { PublishControls } from "@/components/projects/PublishControls";
 
 export type ProjectListItem = {
   id: string;
@@ -12,6 +13,8 @@ export type ProjectListItem = {
   floorCount: number;
   areaLabel: string;
   updatedLabel: string;
+  publishStatus: "draft" | "published";
+  publicSlug: string;
 };
 
 type ProjectCardProps = {
@@ -22,12 +25,19 @@ export function ProjectCard({ project }: ProjectCardProps) {
   return (
     <article className="flex flex-col gap-4 rounded-lg border border-border bg-elevated p-5 shadow-card">
       <div className="flex flex-col gap-1">
-        <Link
-          href={`/editor/${project.id}`}
-          className="text-lg font-semibold tracking-tight text-navy hover:text-accent"
-        >
-          {project.name}
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={`/editor/${project.id}`}
+            className="text-lg font-semibold tracking-tight text-navy hover:text-accent"
+          >
+            {project.name}
+          </Link>
+          {project.publishStatus === "published" ? (
+            <span className="rounded-sm bg-tinted px-2 py-0.5 text-xs font-medium text-accent">
+              Published
+            </span>
+          ) : null}
+        </div>
         <p className="text-sm text-fg-muted">
           {project.floorCount} {project.floorCount === 1 ? "floor" : "floors"}
           {" · "}
@@ -53,6 +63,12 @@ export function ProjectCard({ project }: ProjectCardProps) {
         <RenameProjectForm projectId={project.id} name={project.name} />
         <DeleteProjectForm projectId={project.id} name={project.name} />
       </div>
+
+      <PublishControls
+        projectId={project.id}
+        initialStatus={project.publishStatus}
+        publicSlug={project.publicSlug}
+      />
     </article>
   );
 }

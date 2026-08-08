@@ -1,4 +1,12 @@
-/** Pixels per plan inch for raster/export sizing (letter-ish print density). */
+/**
+ * Shared export constants.
+ *
+ * Raster pixel density is computed dynamically (see raster-scale.ts).
+ * EXPORT_PX_PER_IN is the SVG serialization density and the Print preset target
+ * before iOS-safe clamping.
+ */
+
+/** Pixels per plan inch used when serializing SVG width/height attributes. */
 export const EXPORT_PX_PER_IN = 8;
 
 /**

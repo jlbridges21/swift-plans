@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { PlanDrawing } from "@/components/plan/PlanDrawing";
+import { planViewBox, PlanDrawing } from "@/components/plan/PlanDrawing";
 import { Button } from "@/components/ui/Button";
+import { EXPORT_PX_PER_IN } from "@/lib/export/constants";
 import { downloadBlob, downloadText } from "@/lib/export/download";
-import { rasterizePlanSvg } from "@/lib/export/rasterize";
 import { exportFilename } from "@/lib/export/filename";
+import {
+  computeRasterSize,
+  RASTER_PRESET_LABELS,
+  type RasterPreset,
+} from "@/lib/export/raster-scale";
+import { BlankRasterError, rasterizePlanSvg } from "@/lib/export/rasterize";
 import { serializePlanSvgClient } from "@/lib/export/serialize-plan-client";
 import {
   getBrandingSettings,
@@ -57,6 +63,7 @@ export function ExportSheet({
   onClose,
 }: ExportSheetProps) {
   const [format, setFormat] = useState<ExportFormat>("svg");
+  const [preset, setPreset] = useState<RasterPreset>("mls");
   const [branded, setBranded] = useState(false);
   const [branding, setBranding] = useState<BrandingRow | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
@@ -99,6 +106,11 @@ export function ExportSheet({
     };
   }, [branded, branding, companyName, website, footerText, logoDataUri]);
 
+  const rasterPreview = useMemo(() => {
+    const vb = planViewBox(geometry, style);
+    return computeRasterSize(vb.width, vb.height, preset, EXPORT_PX_PER_IN);
+  }, [geometry, style, preset]);
+
   async function handleSaveBranding() {
     setError(null);
     const result = await saveBrandingSettings({
@@ -117,7 +129,10 @@ export function ExportSheet({
   }
 
   async function handleLogo(file: File | null) {
-    if (!file || !userId) return;
+    if (!file || !userId) {
+      if (!userId) setError("Sign in again to upload a logo.");
+      return;
+    }
     setError(null);
     const result = await uploadBrandingLogo(file, userId);
     if (!result.ok) {
@@ -182,24 +197,33 @@ export function ExportSheet({
         return;
       }
 
-      setStatus(`Creating ${format.toUpperCase()}…`);
-      const blob = await rasterizePlanSvg(svg, format, 1);
+      setStatus(
+        `Creating ${format.toUpperCase()} (${rasterPreview.widthPx}×${rasterPreview.heightPx})…`,
+      );
+      const { blob, size } = await rasterizePlanSvg(svg, format, preset);
       const how = await downloadBlob(blob, name);
+      const dim = `${size.widthPx}×${size.heightPx}`;
       setStatus(
         how === "share"
-          ? "Shared from Safari — save the image from the share sheet."
-          : `${format.toUpperCase()} downloaded.`,
+          ? `Shared ${dim} from Safari — save the image from the share sheet.`
+          : `${format.toUpperCase()} downloaded (${dim}).`,
       );
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Export failed. Check your connection and try again.",
-      );
+      if (err instanceof BlankRasterError) {
+        setError(err.message);
+      } else {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Export failed. Check your connection and try again.",
+        );
+      }
     } finally {
       setBusy(false);
     }
   }
+
+  const isRaster = format === "png" || format === "jpg";
 
   return (
     <div
@@ -218,10 +242,14 @@ export function ExportSheet({
         className={[
           "pointer-events-auto relative z-10 flex w-full max-w-lg flex-col gap-4",
           "max-h-[90dvh] overflow-y-auto rounded-t-lg border border-border bg-elevated p-5 shadow-card sm:rounded-lg",
+          "pb-[max(1.25rem,env(safe-area-inset-bottom))]",
         ].join(" ")}
       >
         <div className="flex items-start justify-between gap-3">
-          <h2 id="export-sheet-title" className="text-lg font-semibold text-navy">
+          <h2
+            id="export-sheet-title"
+            className="text-lg font-semibold text-navy"
+          >
             Export
           </h2>
           <button
@@ -253,6 +281,30 @@ export function ExportSheet({
             (one page each) via print.
           </p>
         </section>
+
+        {isRaster ? (
+          <section className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold text-navy">Resolution</h3>
+            <div className="flex flex-wrap gap-2">
+              {(["web", "mls", "print"] as RasterPreset[]).map((p) => (
+                <Button
+                  key={p}
+                  type="button"
+                  variant={preset === p ? "primary" : "secondary"}
+                  onClick={() => setPreset(p)}
+                >
+                  {RASTER_PRESET_LABELS[p]}
+                </Button>
+              ))}
+            </div>
+            <p className="text-xs text-fg-muted">
+              Output size: {rasterPreview.widthPx}×{rasterPreview.heightPx} px
+              {rasterPreview.clamped
+                ? " (scaled down to fit this device safely)"
+                : ""}
+            </p>
+          </section>
+        ) : null}
 
         <section className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold text-navy">Branding</h3>

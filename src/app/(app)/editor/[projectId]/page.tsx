@@ -22,7 +22,7 @@ export default async function EditorPage({ params }: EditorPageProps) {
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, owner_id, style_settings")
+    .select("id, name, owner_id, style_settings, publish_status, public_slug")
     .eq("id", projectId)
     .maybeSingle();
 
@@ -77,6 +77,10 @@ export default async function EditorPage({ params }: EditorPageProps) {
       initialFloorId={floors[0]!.id}
       initialFloors={floors}
       initialGeometries={initialGeometries}
+      initialPublishStatus={
+        project.publish_status === "published" ? "published" : "draft"
+      }
+      publicSlug={project.public_slug}
     />
   );
 }

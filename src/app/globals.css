@@ -75,10 +75,12 @@
 
 html {
   height: 100%;
+  overflow-x: hidden;
 }
 
 body {
   min-height: 100%;
+  overflow-x: hidden;
   background: var(--sp-bg);
   color: var(--sp-fg);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
