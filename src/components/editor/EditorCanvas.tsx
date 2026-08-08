@@ -19,6 +19,10 @@ import {
 import { listOpenings } from "@/lib/plan/openings";
 import { openingWorldSpan } from "@/lib/plan/openings";
 import { stairsPolygon } from "@/lib/plan/stairs";
+import {
+  DEFAULT_PLAN_STYLE,
+  type PlanStyleSettings,
+} from "@/lib/plan/style-settings";
 import type { FloorGeometry, PlanPoint } from "@/types/plan-geometry";
 import {
   collectSnapTargets,
@@ -34,6 +38,7 @@ export type CameraViewBox = {
 
 type EditorCanvasProps = {
   geometry: FloorGeometry;
+  style?: PlanStyleSettings;
   selectedRoomId: string | null;
   selectedWallId: string | null;
   selectedOpeningId: string | null;
@@ -164,6 +169,7 @@ type ActiveGesture =
  */
 export function EditorCanvas({
   geometry,
+  style = DEFAULT_PLAN_STYLE,
   selectedRoomId,
   selectedWallId,
   selectedOpeningId,
@@ -674,7 +680,7 @@ export function EditorCanvas({
   const guidePad = Math.max(view.w, view.h);
 
   return (
-    <div className="relative flex h-[min(38dvh,340px)] w-full shrink-0 flex-col">
+    <div className="relative h-full min-h-0 w-full flex-1">
       <svg
         ref={svgRef}
         viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
@@ -687,7 +693,7 @@ export function EditorCanvas({
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
       >
-        <PlanDocument geometry={geometry} />
+        <PlanDocument geometry={geometry} style={style} />
 
         <g data-editor-overlay="true">
           {geometry.rooms.map((room) => (

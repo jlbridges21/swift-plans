@@ -3,6 +3,7 @@ import Link from "next/link";
 import { EditorClient } from "@/components/editor/EditorClient";
 import { requireUser } from "@/lib/auth/session";
 import { createClient } from "@/lib/supabase/server";
+import { normalizePlanStyle } from "@/lib/plan/style-settings";
 import {
   createEmptyFloorGeometry,
   type FloorGeometry,
@@ -21,7 +22,7 @@ export default async function EditorPage({ params }: EditorPageProps) {
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, name, owner_id")
+    .select("id, name, owner_id, style_settings")
     .eq("id", projectId)
     .maybeSingle();
 
@@ -72,6 +73,7 @@ export default async function EditorPage({ params }: EditorPageProps) {
     <EditorClient
       projectId={project.id}
       projectName={project.name}
+      initialStyle={normalizePlanStyle(project.style_settings)}
       initialFloorId={floors[0]!.id}
       initialFloors={floors}
       initialGeometries={initialGeometries}

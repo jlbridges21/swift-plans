@@ -28,18 +28,27 @@ import {
 } from "@/lib/plan/resolve-opening";
 import { stairsDirectionVector, stairsPolygon } from "@/lib/plan/stairs";
 import {
+  DEFAULT_PLAN_STYLE,
+  LABEL_SIZE_PX,
+  type PlanStyleSettings,
+} from "@/lib/plan/style-settings";
+import {
   isEmptyFloorGeometry,
   type FloorGeometry,
   type PlanRoom,
 } from "@/types/plan-geometry";
 
 /** Finite viewBox parts for empty and non-empty documents. */
-export function planViewBox(geometry: FloorGeometry): {
+export function planViewBox(
+  geometry: FloorGeometry,
+  style: PlanStyleSettings = DEFAULT_PLAN_STYLE,
+): {
   minX: number;
   minY: number;
   width: number;
   height: number;
 } {
+  void style;
   const margin = planTokens.sheetMargin;
   const { bounds } = geometry.meta;
   return {
@@ -52,6 +61,7 @@ export function planViewBox(geometry: FloorGeometry): {
 
 type PlanDocumentProps = {
   geometry: FloorGeometry;
+  style?: PlanStyleSettings;
 };
 
 type LabelLayout = {
@@ -60,7 +70,10 @@ type LabelLayout = {
   nameSize: number;
 };
 
-function labelLayoutForRoom(room: PlanRoom): LabelLayout {
+function labelLayoutForRoom(
+  room: PlanRoom,
+  style: PlanStyleSettings,
+): LabelLayout {
   const box = roomAabb(room);
   const avail =
     box.maxX - box.minX - planTokens.labelFit.paddingIn * 2;
@@ -68,7 +81,7 @@ function labelLayoutForRoom(room: PlanRoom): LabelLayout {
   const dims = formatRoomDimensions(room.polygon);
   const area = `${Math.round(sqInToSqFt(polygonAreaSqIn(room.polygon)))} SQ FT`;
 
-  let nameSize = planTokens.typography.labelSize;
+  let nameSize = LABEL_SIZE_PX[style.labelSize];
   const nameFits = (size: number) =>
     estimateLabelTextWidth(name, size) <= Math.max(avail, 1);
 
@@ -76,10 +89,14 @@ function labelLayoutForRoom(room: PlanRoom): LabelLayout {
     nameSize -= 1;
   }
 
-  const dimsW = estimateLabelTextWidth(dims, planTokens.typography.dimensionSize);
+  const dimsW = estimateLabelTextWidth(
+    dims,
+    planTokens.typography.dimensionSize,
+  );
   const areaW = estimateLabelTextWidth(area, planTokens.typography.areaSize);
-  const showDims = dimsW <= avail;
-  const showArea = showDims && areaW <= avail;
+  const showDims = style.showRoomDimensions && dimsW <= avail;
+  const showArea =
+    style.showRoomAreas && showDims && areaW <= avail;
 
   return { showDims, showArea, nameSize };
 }
@@ -88,7 +105,10 @@ function labelLayoutForRoom(room: PlanRoom): LabelLayout {
  * Pure document layers (no SVG root, no editing chrome).
  * Safe to place inside an editor camera SVG or a standalone PlanDrawing.
  */
-export function PlanDocument({ geometry }: PlanDocumentProps) {
+export function PlanDocument({
+  geometry,
+  style = DEFAULT_PLAN_STYLE,
+}: PlanDocumentProps) {
   const { bounds, title } = geometry.meta;
   const margin = planTokens.sheetMargin;
   const empty = isEmptyFloorGeometry(geometry);
@@ -96,10 +116,12 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
   const livingSqFt = livingAreaSqFt(geometry);
   const totalLivingSqFt = livingSqFt ?? 0;
 
-  const texturedRooms = geometry.rooms.filter(
-    (room) =>
-      floorTextureForRoomType(normalizeRoomType(room.type)) !== "none",
-  );
+  const texturedRooms = style.showFloorTexture
+    ? geometry.rooms.filter(
+        (room) =>
+          floorTextureForRoomType(normalizeRoomType(room.type)) !== "none",
+      )
+    : [];
 
   return (
     <g aria-label={title || "Floor plan"}>
@@ -108,47 +130,51 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
           const texture = floorTextureForRoomType(
             normalizeRoomType(room.type),
           );
-          if (texture === "plank") {
-            const spacing = planTokens.plankSpacing;
-            const rotation = roomLongAxisDegrees(room.polygon);
-            return (
+          const clipId = `clip-${room.id}`;
+          const pattern =
+            texture === "plank" ? (
               <pattern
                 key={`tex-${room.id}`}
                 id={`tex-${room.id}`}
-                width={spacing}
-                height={spacing}
+                width={planTokens.plankSpacing}
+                height={planTokens.plankSpacing}
                 patternUnits="userSpaceOnUse"
-                patternTransform={`rotate(${rotation})`}
+                patternTransform={`rotate(${roomLongAxisDegrees(room.polygon)})`}
               >
                 <line
                   x1="0"
                   y1="0"
                   x2="0"
-                  y2={spacing}
+                  y2={planTokens.plankSpacing}
+                  stroke={planTokens.symbol}
+                  strokeWidth={planTokens.stroke.annotation}
+                  opacity={planTokens.textureOpacity}
+                />
+              </pattern>
+            ) : (
+              <pattern
+                key={`tex-${room.id}`}
+                id={`tex-${room.id}`}
+                width={planTokens.tileSpacing}
+                height={planTokens.tileSpacing}
+                patternUnits="userSpaceOnUse"
+              >
+                <path
+                  d={`M 0 ${planTokens.tileSpacing / 2} H ${planTokens.tileSpacing} M ${planTokens.tileSpacing / 2} 0 V ${planTokens.tileSpacing}`}
+                  fill="none"
                   stroke={planTokens.symbol}
                   strokeWidth={planTokens.stroke.annotation}
                   opacity={planTokens.textureOpacity}
                 />
               </pattern>
             );
-          }
-          const spacing = planTokens.tileSpacing;
           return (
-            <pattern
-              key={`tex-${room.id}`}
-              id={`tex-${room.id}`}
-              width={spacing}
-              height={spacing}
-              patternUnits="userSpaceOnUse"
-            >
-              <path
-                d={`M 0 ${spacing / 2} H ${spacing} M ${spacing / 2} 0 V ${spacing}`}
-                fill="none"
-                stroke={planTokens.symbol}
-                strokeWidth={planTokens.stroke.annotation}
-                opacity={planTokens.textureOpacity}
-              />
-            </pattern>
+            <g key={`defs-${room.id}`}>
+              <clipPath id={clipId}>
+                <path d={pointsToPath(room.polygon)} />
+              </clipPath>
+              {pattern}
+            </g>
           );
         })}
       </defs>
@@ -166,23 +192,32 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
         </text>
       ) : null}
 
-      {geometry.rooms.map((room) => (
-        <g key={`fill-${room.id}`}>
-          <path
-            d={pointsToPath(room.polygon)}
-            fill={planTokens.fill[room.category]}
-            stroke="none"
-          />
-          {floorTextureForRoomType(normalizeRoomType(room.type)) !==
-          "none" ? (
-            <path
-              d={pointsToPath(room.polygon)}
-              fill={`url(#tex-${room.id})`}
-              stroke="none"
-            />
-          ) : null}
-        </g>
-      ))}
+      {geometry.rooms.map((room) => {
+        const fill = planTokens.fill[room.category];
+        return (
+          <g key={`fill-${room.id}`}>
+            {style.showRoomFills ? (
+              <path
+                d={pointsToPath(room.polygon)}
+                fill={fill}
+                stroke={fill}
+                strokeWidth={1}
+                strokeLinejoin="miter"
+              />
+            ) : null}
+            {style.showFloorTexture &&
+            floorTextureForRoomType(normalizeRoomType(room.type)) !==
+              "none" ? (
+              <path
+                d={pointsToPath(room.polygon)}
+                fill={`url(#tex-${room.id})`}
+                stroke="none"
+                clipPath={`url(#clip-${room.id})`}
+              />
+            ) : null}
+          </g>
+        );
+      })}
 
       {geometry.walls
         .filter((w) => w.kind === "interior")
@@ -258,7 +293,6 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
             strokeLinecap="round"
             strokeLinejoin="round"
           >
-            {/* Clears residual fill on hand-authored samples; no-op on true gaps */}
             <line
               x1={hinge.x}
               y1={hinge.y}
@@ -268,13 +302,11 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
               strokeWidth={thickness * 0.85}
               strokeLinecap="butt"
             />
-            <path d={arc} />
+            {style.showDoorSwings ? <path d={arc} /> : null}
             <path d={leaf} />
           </g>
         );
       })}
-
-      {/* Plain openings: gap only — no symbol */}
 
       {geometry.stairs.map((stair) => {
         const poly = stairsPolygon(stair);
@@ -286,22 +318,10 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
           x: cx + dir.x * arrowLen,
           y: cy + dir.y * arrowLen,
         };
-        // Tread lines perpendicular to ascent
-        const px = -dir.y;
-        const py = dir.x;
-        const halfW = stair.widthIn * 0.4;
         const treadCount = Math.max(3, Math.round(stair.depthIn / 12));
         const treads = [];
         for (let i = 1; i < treadCount; i += 1) {
           const t = i / treadCount;
-          const ox = poly[0].x + (poly[3].x - poly[0].x) * t;
-          const oy = poly[0].y + (poly[3].y - poly[0].y) * t;
-          // Along width from left side of run
-          const along = {
-            x: (poly[1].x - poly[0].x) * t + poly[0].x,
-            y: (poly[1].y - poly[0].y) * t + poly[0].y,
-          };
-          // Better: interpolate along depth edges
           const left = {
             x: poly[0].x + (poly[3].x - poly[0].x) * t,
             y: poly[0].y + (poly[3].y - poly[0].y) * t,
@@ -310,12 +330,6 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
             x: poly[1].x + (poly[2].x - poly[1].x) * t,
             y: poly[1].y + (poly[2].y - poly[1].y) * t,
           };
-          void ox;
-          void oy;
-          void along;
-          void halfW;
-          void px;
-          void py;
           treads.push(
             <line
               key={`tread-${stair.id}-${i}`}
@@ -365,7 +379,7 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
         const at = room.labelAnchor;
         const area = Math.round(sqInToSqFt(polygonAreaSqIn(room.polygon)));
         const dims = formatRoomDimensions(room.polygon);
-        const layout = labelLayoutForRoom(room);
+        const layout = labelLayoutForRoom(room, style);
         return (
           <text
             key={`label-${room.id}`}
@@ -411,18 +425,33 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
         );
       })}
 
-      {!empty && livingSqFt !== null ? (
-        <text
-          x={bounds.minX + margin * 0.15}
-          y={bounds.maxY + margin * 0.55}
-          fontFamily={PLAN_FONT_FAMILY}
-          fill={planTokens.inkMuted}
-          fontSize={planTokens.typography.totalAreaSize}
-          fontWeight={600}
-          letterSpacing="0.08em"
+      {!empty ? (
+        <g
+          transform={`translate(${bounds.minX + margin * 0.12}, ${bounds.maxY + margin * 0.42})`}
         >
-          TOTAL LIVING AREA  {Math.round(totalLivingSqFt).toLocaleString()} SQ FT
-        </text>
+          <text
+            fontFamily={PLAN_FONT_FAMILY}
+            fill={planTokens.inkMuted}
+            fontSize={13}
+            fontWeight={600}
+            letterSpacing="0.14em"
+          >
+            {(title || "FLOOR PLAN").toUpperCase()}
+          </text>
+          {style.showTotalArea && livingSqFt !== null ? (
+            <text
+              y={22}
+              fontFamily={PLAN_FONT_FAMILY}
+              fill={planTokens.inkSubtle}
+              fontSize={planTokens.typography.totalAreaSize}
+              fontWeight={600}
+              letterSpacing="0.08em"
+            >
+              TOTAL LIVING AREA{"  "}
+              {Math.round(totalLivingSqFt).toLocaleString()} SQ FT
+            </text>
+          ) : null}
+        </g>
       ) : null}
     </g>
   );
@@ -430,12 +459,16 @@ export function PlanDocument({ geometry }: PlanDocumentProps) {
 
 type PlanDrawingProps = {
   geometry: FloorGeometry;
+  style?: PlanStyleSettings;
 };
 
 /** Standalone document renderer (debug / export). No editing chrome. */
-export function PlanDrawing({ geometry }: PlanDrawingProps) {
+export function PlanDrawing({
+  geometry,
+  style = DEFAULT_PLAN_STYLE,
+}: PlanDrawingProps) {
   const { minX: viewMinX, minY: viewMinY, width: viewW, height: viewH } =
-    planViewBox(geometry);
+    planViewBox(geometry, style);
   const { title } = geometry.meta;
 
   return (
@@ -457,7 +490,12 @@ export function PlanDrawing({ geometry }: PlanDrawingProps) {
         height={viewH}
         fill={planTokens.paper}
       />
-      <PlanDocument geometry={geometry} />
+      <PlanDocument geometry={geometry} style={style} />
     </svg>
   );
+}
+
+/** Expose clip path id helper for assertions. */
+export function roomTextureClipPathId(roomId: string): string {
+  return `clip-${roomId}`;
 }

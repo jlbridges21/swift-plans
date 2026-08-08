@@ -33,9 +33,14 @@ import type {
   PlanWall,
 } from "../../types/plan-geometry.ts";
 
-/** Must match planTokens.wallExterior / wallInterior (no runtime import — Node checks). */
+/** Must match planTokens defaults (no runtime import — Node checks). */
 export const DERIVED_WALL_EXTERIOR = 6;
 export const DERIVED_WALL_INTERIOR = 4.5;
+
+export type DeriveWallOptions = {
+  exteriorThickness?: number;
+  interiorThickness?: number;
+};
 
 const EPS = 1e-6;
 const MIN_LEN = 1e-3;
@@ -169,7 +174,7 @@ function subtractIntervals(
   return out;
 }
 
-function wallLength(centerline: PlanPoint[]): number {
+function wallLength(centerline: PlanPoint[], closed = false): number {
   if (centerline.length < 2) return 0;
   let total = 0;
   for (let i = 0; i < centerline.length - 1; i += 1) {
@@ -178,15 +183,26 @@ function wallLength(centerline: PlanPoint[]): number {
       centerline[i + 1].y - centerline[i].y,
     );
   }
+  if (closed && centerline.length > 2) {
+    const a = centerline[centerline.length - 1]!;
+    const b = centerline[0]!;
+    total += Math.hypot(b.x - a.x, b.y - a.y);
+  }
   return total;
 }
 
 /**
  * Compute the full wall set for a list of rooms.
  * Interior walls use interior thickness on the shared edge.
- * Exterior walls use exterior thickness; centerline offset outward by half thickness.
+ * Exterior remainders are chained into continuous polylines (closed rings when
+ * possible) so miters match the hand-authored sample; openings split fill later.
  */
-export function deriveWallsFromRooms(rooms: PlanRoom[]): PlanWall[] {
+export function deriveWallsFromRooms(
+  rooms: PlanRoom[],
+  options?: DeriveWallOptions,
+): PlanWall[] {
+  const exteriorThickness = options?.exteriorThickness ?? DERIVED_WALL_EXTERIOR;
+  const interiorThickness = options?.interiorThickness ?? DERIVED_WALL_INTERIOR;
   const edges = collectEdges(rooms);
   const ortho = edges.filter((e) => e.axis !== "diag");
   const diag = edges.filter((e) => e.axis === "diag");
@@ -224,7 +240,6 @@ export function deriveWallsFromRooms(rooms: PlanRoom[]): PlanWall[] {
     }
   }
 
-  // Dedupe identical spans (same pair/axis/c/t0/t1) — two edges can match once
   const seenInterior = new Set<string>();
   const uniqueInterior: InteriorCand[] = [];
   for (const cand of interiorCands) {
@@ -265,14 +280,23 @@ export function deriveWallsFromRooms(rooms: PlanRoom[]): PlanWall[] {
     walls.push({
       id: `wi:${cand.roomA}:${cand.roomB}:${spanIndex}`,
       centerline,
-      thickness: DERIVED_WALL_INTERIOR,
+      thickness: interiorThickness,
       kind: "interior",
       closed: false,
       roomIds: [cand.roomA, cand.roomB],
     });
   }
 
-  // Cover map per edge for exterior remainders
+  // Exterior remainders on the floor (inside face) — chain before offsetting
+  type FloorSeg = {
+    a: PlanPoint;
+    b: PlanPoint;
+    roomId: string;
+    edgeIndex: number;
+    subIndex: number;
+  };
+  const floorSegs: FloorSeg[] = [];
+
   const coverByEdge = new Map<string, Interval[]>();
   const edgeKey = (e: RoomEdge) => `${e.roomId}:${e.edgeIndex}`;
 
@@ -287,8 +311,6 @@ export function deriveWallsFromRooms(rooms: PlanRoom[]): PlanWall[] {
     }
   }
 
-  const halfExt = DERIVED_WALL_EXTERIOR / 2;
-
   for (const edge of ortho) {
     const covered = (coverByEdge.get(edgeKey(edge)) ?? []).map((iv) => ({
       t0: iv.t0,
@@ -296,53 +318,306 @@ export function deriveWallsFromRooms(rooms: PlanRoom[]): PlanWall[] {
     }));
     const remainders = subtractIntervals(edge.t0, edge.t1, covered);
     remainders.forEach((rem, subIndex) => {
-      // Build segment in polygon edge direction for consistent outward normal
       const alongStart = pointAlong(edge, rem.t0);
       const alongEnd = pointAlong(edge, rem.t1);
-      // Orient from edge.a toward edge.b
       const edgeDirPositive =
-        edge.axis === "h"
-          ? edge.b.x >= edge.a.x
-          : edge.b.y >= edge.a.y;
+        edge.axis === "h" ? edge.b.x >= edge.a.x : edge.b.y >= edge.a.y;
       const rawA = edgeDirPositive ? alongStart : alongEnd;
       const rawB = edgeDirPositive ? alongEnd : alongStart;
-      const n = outwardNormal(edge.a, edge.b);
-      const centerline: PlanPoint[] = [
-        { x: rawA.x + n.x * halfExt, y: rawA.y + n.y * halfExt },
-        { x: rawB.x + n.x * halfExt, y: rawB.y + n.y * halfExt },
-      ];
-      if (wallLength(centerline) < MIN_LEN) return;
-
-      walls.push({
-        id: `we:${edge.roomId}:${edge.edgeIndex}:${subIndex}`,
-        centerline,
-        thickness: DERIVED_WALL_EXTERIOR,
-        kind: "exterior",
-        closed: false,
-        roomIds: [edge.roomId],
+      if (Math.hypot(rawB.x - rawA.x, rawB.y - rawA.y) < MIN_LEN) return;
+      floorSegs.push({
+        a: { ...rawA },
+        b: { ...rawB },
+        roomId: edge.roomId,
+        edgeIndex: edge.edgeIndex,
+        subIndex,
       });
     });
   }
 
-  // Non-orthogonal: full edge as exterior (no split)
   for (const edge of diag) {
-    const n = outwardNormal(edge.a, edge.b);
-    const centerline: PlanPoint[] = [
-      { x: edge.a.x + n.x * halfExt, y: edge.a.y + n.y * halfExt },
-      { x: edge.b.x + n.x * halfExt, y: edge.b.y + n.y * halfExt },
-    ];
-    if (wallLength(centerline) < MIN_LEN) continue;
-    walls.push({
-      id: `we:${edge.roomId}:${edge.edgeIndex}:0`,
-      centerline,
-      thickness: DERIVED_WALL_EXTERIOR,
-      kind: "exterior",
-      closed: false,
-      roomIds: [edge.roomId],
+    if (Math.hypot(edge.b.x - edge.a.x, edge.b.y - edge.a.y) < MIN_LEN) continue;
+    floorSegs.push({
+      a: { ...edge.a },
+      b: { ...edge.b },
+      roomId: edge.roomId,
+      edgeIndex: edge.edgeIndex,
+      subIndex: 0,
     });
   }
 
+  const chains = chainFloorSegments(floorSegs);
+  const halfExt = exteriorThickness / 2;
+
+  chains.forEach((chain, loopIndex) => {
+    if (chain.length === 0) return;
+    const floorLine = polylineFromChain(chain);
+    if (floorLine.length < 2) return;
+
+    const closed = isClosedPolyline(floorLine);
+    const centerline = offsetFloorOutward(floorLine, closed, halfExt);
+    if (wallLength(centerline, closed) < MIN_LEN) return;
+
+    const roomIds = [...new Set(chain.map((s) => s.roomId))];
+    // Prefer stable atomic id when the chain is a single remainder
+    const id =
+      chain.length === 1
+        ? `we:${chain[0]!.roomId}:${chain[0]!.edgeIndex}:${chain[0]!.subIndex}`
+        : `we:loop:${loopIndex}`;
+
+    walls.push({
+      id,
+      centerline: closed ? floorLineClosedPoints(centerline) : centerline,
+      thickness: exteriorThickness,
+      kind: "exterior",
+      closed,
+      roomIds,
+    });
+  });
+
   return walls;
+}
+
+function ptKey(p: PlanPoint): string {
+  return `${Math.round(p.x * 1000) / 1000},${Math.round(p.y * 1000) / 1000}`;
+}
+
+function samePt(a: PlanPoint, b: PlanPoint): boolean {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= EPS * 10;
+}
+
+type FloorSeg = {
+  a: PlanPoint;
+  b: PlanPoint;
+  roomId: string;
+  edgeIndex: number;
+  subIndex: number;
+};
+
+/** Chain contiguous exterior floor segments into polylines. */
+export function chainFloorSegments(segs: FloorSeg[]): FloorSeg[][] {
+  if (segs.length === 0) return [];
+  const unused = segs.map((s, i) => ({ ...s, _i: i }));
+  const used = new Set<number>();
+  const chains: FloorSeg[][] = [];
+
+  const findFrom = (
+    point: PlanPoint,
+    exclude: number,
+  ): { idx: number; flip: boolean } | null => {
+    for (let i = 0; i < unused.length; i += 1) {
+      if (used.has(i) || i === exclude) continue;
+      const s = unused[i]!;
+      if (samePt(s.a, point)) return { idx: i, flip: false };
+      if (samePt(s.b, point)) return { idx: i, flip: true };
+    }
+    return null;
+  };
+
+  for (let start = 0; start < unused.length; start += 1) {
+    if (used.has(start)) continue;
+    used.add(start);
+    let forward: FloorSeg[] = [
+      {
+        a: { ...unused[start]!.a },
+        b: { ...unused[start]!.b },
+        roomId: unused[start]!.roomId,
+        edgeIndex: unused[start]!.edgeIndex,
+        subIndex: unused[start]!.subIndex,
+      },
+    ];
+
+    // Grow forward from end
+    for (;;) {
+      const end = forward[forward.length - 1]!.b;
+      const hit = findFrom(end, -1);
+      if (!hit) break;
+      used.add(hit.idx);
+      const s = unused[hit.idx]!;
+      forward.push(
+        hit.flip
+          ? {
+              a: { ...s.b },
+              b: { ...s.a },
+              roomId: s.roomId,
+              edgeIndex: s.edgeIndex,
+              subIndex: s.subIndex,
+            }
+          : {
+              a: { ...s.a },
+              b: { ...s.b },
+              roomId: s.roomId,
+              edgeIndex: s.edgeIndex,
+              subIndex: s.subIndex,
+            },
+      );
+    }
+
+    // Grow backward from start
+    for (;;) {
+      const startPt = forward[0]!.a;
+      const hit = findFrom(startPt, -1);
+      if (!hit) break;
+      used.add(hit.idx);
+      const s = unused[hit.idx]!;
+      const seg = hit.flip
+        ? {
+            a: { ...s.a },
+            b: { ...s.b },
+            roomId: s.roomId,
+            edgeIndex: s.edgeIndex,
+            subIndex: s.subIndex,
+          }
+        : {
+            a: { ...s.b },
+            b: { ...s.a },
+            roomId: s.roomId,
+            edgeIndex: s.edgeIndex,
+            subIndex: s.subIndex,
+          };
+      // After flip logic: we need seg.b === startPt
+      const oriented = samePt(seg.b, startPt)
+        ? seg
+        : {
+            a: { ...seg.b },
+            b: { ...seg.a },
+            roomId: seg.roomId,
+            edgeIndex: seg.edgeIndex,
+            subIndex: seg.subIndex,
+          };
+      forward = [oriented, ...forward];
+    }
+
+    chains.push(forward);
+  }
+
+  // Stable order: longer chains first, then by first point
+  chains.sort((a, b) => {
+    if (b.length !== a.length) return b.length - a.length;
+    const ak = ptKey(a[0]!.a);
+    const bk = ptKey(b[0]!.a);
+    return ak.localeCompare(bk);
+  });
+
+  return chains;
+}
+
+function polylineFromChain(chain: FloorSeg[]): PlanPoint[] {
+  if (chain.length === 0) return [];
+  const pts: PlanPoint[] = [{ ...chain[0]!.a }];
+  for (const seg of chain) {
+    pts.push({ ...seg.b });
+  }
+  return pts;
+}
+
+function isClosedPolyline(pts: PlanPoint[]): boolean {
+  if (pts.length < 4) return false;
+  return samePt(pts[0]!, pts[pts.length - 1]!);
+}
+
+/** Drop duplicate closing point for closed centerlines stored without repeat. */
+function floorLineClosedPoints(pts: PlanPoint[]): PlanPoint[] {
+  if (pts.length >= 2 && samePt(pts[0]!, pts[pts.length - 1]!)) {
+    return pts.slice(0, -1);
+  }
+  return pts;
+}
+
+/**
+ * Offset a floor-boundary polyline outward (away from building interior).
+ * Assumes CCW walk with interior on the left → outward = right = (dy, -dx).
+ */
+function offsetFloorOutward(
+  floorLine: PlanPoint[],
+  closed: boolean,
+  half: number,
+): PlanPoint[] {
+  const pts =
+    closed && samePt(floorLine[0]!, floorLine[floorLine.length - 1]!)
+      ? floorLine.slice(0, -1)
+      : floorLine;
+  const n = pts.length;
+  if (n < 2) return [];
+
+  const out: PlanPoint[] = [];
+  for (let i = 0; i < n; i += 1) {
+    if (!closed && (i === 0 || i === n - 1)) {
+      const a = pts[i === 0 ? 0 : n - 2]!;
+      const b = pts[i === 0 ? 1 : n - 1]!;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      // Outward right of a→b
+      const nx = dy / len;
+      const ny = -dx / len;
+      out.push({
+        x: pts[i]!.x + nx * half,
+        y: pts[i]!.y + ny * half,
+      });
+      continue;
+    }
+    const prev = pts[(i - 1 + n) % n]!;
+    const curr = pts[i]!;
+    const next = pts[(i + 1) % n]!;
+    // Miter: intersect offset lines of prev→curr and curr→next
+    const dInX = curr.x - prev.x;
+    const dInY = curr.y - prev.y;
+    const lenIn = Math.hypot(dInX, dInY) || 1;
+    const dOutX = next.x - curr.x;
+    const dOutY = next.y - curr.y;
+    const lenOut = Math.hypot(dOutX, dOutY) || 1;
+    const nIn = { x: dInY / lenIn, y: -dInX / lenIn };
+    const nOut = { x: dOutY / lenOut, y: -dOutX / lenOut };
+    const a = {
+      x: curr.x + nIn.x * half,
+      y: curr.y + nIn.y * half,
+    };
+    const b = {
+      x: curr.x + nOut.x * half,
+      y: curr.y + nOut.y * half,
+    };
+    // Line a + t*(dirIn) vs b + s*(dirOut)
+    const r = { x: dInX / lenIn, y: dInY / lenIn };
+    const s = { x: dOutX / lenOut, y: dOutY / lenOut };
+    const rxs = r.x * s.y - r.y * s.x;
+    if (Math.abs(rxs) < 1e-9) {
+      out.push({
+        x: curr.x + ((nIn.x + nOut.x) / 2) * half * 2,
+        y: curr.y + ((nIn.y + nOut.y) / 2) * half * 2,
+      });
+      continue;
+    }
+    const qmp = { x: b.x - a.x, y: b.y - a.y };
+    const t = (qmp.x * s.y - qmp.y * s.x) / rxs;
+    const hit = { x: a.x + r.x * t, y: a.y + r.y * t };
+    const miterLen = Math.hypot(hit.x - curr.x, hit.y - curr.y);
+    if (miterLen > half * 4) {
+      const nx = nIn.x + nOut.x;
+      const ny = nIn.y + nOut.y;
+      const nl = Math.hypot(nx, ny) || 1;
+      out.push({
+        x: curr.x + (nx / nl) * half,
+        y: curr.y + (ny / nl) * half,
+      });
+    } else {
+      out.push(hit);
+    }
+  }
+  if (closed) {
+    out.push({ ...out[0]! });
+  }
+  return out;
+}
+
+/** Count unique exterior chains (parent ids), ignoring opening-split suffixes. */
+export function countExteriorChains(walls: PlanWall[]): number {
+  const ids = new Set<string>();
+  for (const w of walls) {
+    if (w.kind !== "exterior") continue;
+    ids.add(parentWallId(w.id));
+  }
+  return ids.size;
 }
 
 /** Strip opening-split suffix (`~0`) to recover the parent span id. */
@@ -351,12 +626,13 @@ export function parentWallId(id: string): string {
   return i >= 0 ? id.slice(0, i) : id;
 }
 
-/** Parse an exterior wall id into room/edge/sub indices. */
+/** Parse an exterior wall id into room/edge/sub indices (atomic we: only). */
 export function parseExteriorWallId(
   id: string,
 ): { roomId: string; edgeIndex: number; subIndex: number } | null {
   const base = parentWallId(id);
   if (!base.startsWith("we:")) return null;
+  if (base.startsWith("we:loop:")) return null;
   const parts = base.split(":");
   if (parts.length < 4) return null;
   const subIndex = Number(parts[parts.length - 1]);
@@ -371,10 +647,13 @@ export function parseExteriorWallId(
 /**
  * Floor-edge segment (inside face) for an exterior wall, before thickness offset.
  * Used by "Add Room Here" so the new room shares exact coordinates.
+ * For chained `we:loop:*` walls, returns the longest exterior remainder among
+ * rooms on that wall (caller may refine with a click later).
  */
 export function exteriorWallFloorSpan(
   rooms: PlanRoom[],
   wallId: string,
+  walls?: PlanWall[],
 ): {
   roomId: string;
   a: PlanPoint;
@@ -383,20 +662,76 @@ export function exteriorWallFloorSpan(
   length: number;
 } | null {
   const parsed = parseExteriorWallId(wallId);
-  if (!parsed) return null;
-  const room = rooms.find((r) => r.id === parsed.roomId);
+  if (parsed) {
+    return exteriorRemainderSpan(rooms, parsed.roomId, parsed.edgeIndex, parsed.subIndex);
+  }
+
+  const base = parentWallId(wallId);
+  if (!base.startsWith("we:loop:") || !walls) return null;
+  const wall = walls.find((w) => parentWallId(w.id) === base);
+  if (!wall) return null;
+
+  let best: {
+    roomId: string;
+    a: PlanPoint;
+    b: PlanPoint;
+    outward: PlanPoint;
+    length: number;
+  } | null = null;
+
+  for (const roomId of wall.roomIds) {
+    const room = rooms.find((r) => r.id === roomId);
+    if (!room) continue;
+    for (let edgeIndex = 0; edgeIndex < room.polygon.length; edgeIndex += 1) {
+      for (let sub = 0; sub < 8; sub += 1) {
+        const span = exteriorRemainderSpan(rooms, roomId, edgeIndex, sub);
+        if (!span) break;
+        if (!best || span.length > best.length) best = span;
+      }
+    }
+  }
+  return best;
+}
+
+/** Floor-face span for the primary exterior remainder on a room edge (subIndex 0). */
+export function exteriorRoomEdgeFloorSpan(
+  rooms: PlanRoom[],
+  roomId: string,
+  edgeIndex: number,
+): {
+  roomId: string;
+  a: PlanPoint;
+  b: PlanPoint;
+  outward: PlanPoint;
+  length: number;
+} | null {
+  return exteriorRemainderSpan(rooms, roomId, edgeIndex, 0);
+}
+
+function exteriorRemainderSpan(
+  rooms: PlanRoom[],
+  roomId: string,
+  edgeIndex: number,
+  subIndex: number,
+): {
+  roomId: string;
+  a: PlanPoint;
+  b: PlanPoint;
+  outward: PlanPoint;
+  length: number;
+} | null {
+  const room = rooms.find((r) => r.id === roomId);
   if (!room) return null;
   const poly = room.polygon;
-  if (parsed.edgeIndex < 0 || parsed.edgeIndex >= poly.length) return null;
+  if (edgeIndex < 0 || edgeIndex >= poly.length) return null;
 
-  const a = poly[parsed.edgeIndex];
-  const b = poly[(parsed.edgeIndex + 1) % poly.length];
+  const a = poly[edgeIndex]!;
+  const b = poly[(edgeIndex + 1) % poly.length]!;
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const isH = nearlyEqual(dy, 0) && !nearlyEqual(dx, 0);
   const isV = nearlyEqual(dx, 0) && !nearlyEqual(dy, 0);
   if (!isH && !isV) {
-    // Diagonal: whole edge is the span
     const len = Math.hypot(dx, dy);
     return {
       roomId: room.id,
@@ -410,7 +745,7 @@ export function exteriorWallFloorSpan(
   const edge: RoomEdge = isH
     ? {
         roomId: room.id,
-        edgeIndex: parsed.edgeIndex,
+        edgeIndex,
         a,
         b,
         axis: "h",
@@ -420,7 +755,7 @@ export function exteriorWallFloorSpan(
       }
     : {
         roomId: room.id,
-        edgeIndex: parsed.edgeIndex,
+        edgeIndex,
         a,
         b,
         axis: "v",
@@ -429,7 +764,6 @@ export function exteriorWallFloorSpan(
         c: a.x,
       };
 
-  // Recompute cover on this edge only
   const all = collectEdges(rooms).filter((e) => e.axis !== "diag");
   const covered: { t0: number; t1: number }[] = [];
   for (const other of all) {
@@ -438,7 +772,7 @@ export function exteriorWallFloorSpan(
     if (ov) covered.push(ov);
   }
   const remainders = subtractIntervals(edge.t0, edge.t1, covered);
-  const rem = remainders[parsed.subIndex];
+  const rem = remainders[subIndex];
   if (!rem) return null;
 
   const edgeDirPositive = isH ? b.x >= a.x : b.y >= a.y;
@@ -622,13 +956,14 @@ export function splitWallsForOpenings(
       continue;
     }
 
+    const chains = stitchOpenWallPieces(pieces, wall.closed);
     let segIndex = 0;
-    for (const piece of pieces) {
-      if (wallLength(piece) < MIN_LEN) continue;
+    for (const chain of chains) {
+      if (wallLength(chain) < MIN_LEN) continue;
       out.push({
         ...wall,
         id: `${parentWallId(wall.id)}~${segIndex}`,
-        centerline: piece,
+        centerline: chain,
         closed: false,
       });
       segIndex += 1;
@@ -636,4 +971,52 @@ export function splitWallsForOpenings(
   }
 
   return out;
+}
+
+/**
+ * Re-join contiguous remainders so opening gaps split the fill without
+ * destroying mitered corners on the rest of a polyline / former closed ring.
+ */
+function stitchOpenWallPieces(
+  pieces: PlanPoint[][],
+  wasClosed: boolean,
+): PlanPoint[][] {
+  if (pieces.length === 0) return [];
+  const chains: PlanPoint[][] = [];
+  let current = pieces[0]!.map((p) => ({ ...p }));
+
+  for (let i = 1; i < pieces.length; i += 1) {
+    const next = pieces[i]!;
+    if (next.length < 2) continue;
+    const tip = current[current.length - 1]!;
+    const head = next[0]!;
+    if (samePt(tip, head)) {
+      for (let j = 1; j < next.length; j += 1) {
+        current.push({ ...next[j]! });
+      }
+    } else {
+      chains.push(current);
+      current = next.map((p) => ({ ...p }));
+    }
+  }
+  chains.push(current);
+
+  if (wasClosed && chains.length > 1) {
+    const first = chains[0]!;
+    const last = chains[chains.length - 1]!;
+    if (
+      first.length >= 2 &&
+      last.length >= 2 &&
+      samePt(last[last.length - 1]!, first[0]!)
+    ) {
+      const merged = last.map((p) => ({ ...p }));
+      for (let j = 1; j < first.length; j += 1) {
+        merged.push({ ...first[j]! });
+      }
+      chains[0] = merged;
+      chains.pop();
+    }
+  }
+
+  return chains;
 }

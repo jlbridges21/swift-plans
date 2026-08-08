@@ -40,3 +40,22 @@ export async function saveFloorGeometry(
 
   return { ok: true };
 }
+
+export async function saveProjectStyleSettings(
+  projectId: string,
+  style: Record<string, unknown>,
+): Promise<SaveGeometryResult> {
+  await requireUser();
+  if (!projectId) return { ok: false, error: "Missing project." };
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("projects")
+    .update({ style_settings: style })
+    .eq("id", projectId);
+
+  if (error) {
+    return { ok: false, error: "Could not save style settings." };
+  }
+  return { ok: true };
+}

@@ -1,5 +1,6 @@
 import {
   deriveWallsFromRooms,
+  exteriorRoomEdgeFloorSpan,
   exteriorWallFloorSpan,
   parentWallId,
   splitWallsForOpenings,
@@ -135,7 +136,10 @@ export function syncRoomTypes(geometry: FloorGeometry): FloorGeometry {
 }
 
 /** Re-derive walls, clamp openings, cut gaps. Always schemaVersion 4. */
-export function finalizeGeometry(geometry: FloorGeometry): FloorGeometry {
+export function finalizeGeometry(
+  geometry: FloorGeometry,
+  style?: { wallExteriorIn?: number; wallInteriorIn?: number },
+): FloorGeometry {
   const synced = syncRoomTypes(geometry);
   const clamped = clampOpeningsInGeometry({
     ...synced,
@@ -147,7 +151,10 @@ export function finalizeGeometry(geometry: FloorGeometry): FloorGeometry {
     offsetIn: o.offsetIn,
     widthIn: o.widthIn,
   }));
-  const baseWalls = deriveWallsFromRooms(clamped.rooms);
+  const baseWalls = deriveWallsFromRooms(clamped.rooms, {
+    exteriorThickness: style?.wallExteriorIn,
+    interiorThickness: style?.wallInteriorIn,
+  });
   const walls = splitWallsForOpenings(baseWalls, clamped.rooms, cuts);
   const next: FloorGeometry = {
     ...clamped,
@@ -314,31 +321,26 @@ export function addRectangularRoom(
   });
 }
 
-export function addRoomAdjoiningWall(
+function roomFromAdjoinSpan(
   geometry: FloorGeometry,
-  wallId: string,
+  span: {
+    a: PlanPoint;
+    b: PlanPoint;
+    outward: PlanPoint;
+    length: number;
+  },
   widthIn: number,
   depthIn: number,
-): FloorGeometry {
-  const wall = geometry.walls.find(
-    (w) => w.id === wallId || parentWallId(w.id) === parentWallId(wallId),
-  );
-  if (!wall || wall.kind !== "exterior" || wall.roomIds.length !== 1) {
-    return geometry;
-  }
-
-  const span = exteriorWallFloorSpan(geometry.rooms, parentWallId(wallId));
-  if (!span || span.length < 1e-3) return geometry;
-
-  const { a, b, outward } = span;
+): PlanRoom | null {
+  if (span.length < 1e-3) return null;
   const wallLen = span.length;
   const useWidth = Math.min(widthIn, wallLen);
-  const ux = (b.x - a.x) / wallLen;
-  const uy = (b.y - a.y) / wallLen;
+  const ux = (span.b.x - span.a.x) / wallLen;
+  const uy = (span.b.y - span.a.y) / wallLen;
+  const { a, outward: n } = span;
 
   const s0 = { x: a.x, y: a.y };
   const s1 = { x: a.x + ux * useWidth, y: a.y + uy * useWidth };
-  const n = outward;
   const polygon: PlanPoint[] = [
     s0,
     { x: s0.x + n.x * depthIn, y: s0.y + n.y * depthIn },
@@ -346,7 +348,7 @@ export function addRoomAdjoiningWall(
     s1,
   ];
 
-  const room: PlanRoom = {
+  return {
     id: newRoomId(),
     name: `Room ${nextRoomNumber(geometry)}`,
     type: "living_room",
@@ -358,7 +360,48 @@ export function addRoomAdjoiningWall(
     },
     nameCustom: false,
   };
+}
 
+export function addRoomAdjoiningWall(
+  geometry: FloorGeometry,
+  wallId: string,
+  widthIn: number,
+  depthIn: number,
+): FloorGeometry {
+  const wall = geometry.walls.find(
+    (w) => w.id === wallId || parentWallId(w.id) === parentWallId(wallId),
+  );
+  if (!wall || wall.kind !== "exterior") {
+    return geometry;
+  }
+
+  const span = exteriorWallFloorSpan(
+    geometry.rooms,
+    parentWallId(wallId),
+    geometry.walls,
+  );
+  if (!span) return geometry;
+  const room = roomFromAdjoinSpan(geometry, span, widthIn, depthIn);
+  if (!room) return geometry;
+
+  return finalizeGeometry({
+    ...geometry,
+    rooms: [...geometry.rooms, room],
+  });
+}
+
+/** Adjoin a new room to a specific exterior room edge (editor / builders). */
+export function addRoomAdjoiningEdge(
+  geometry: FloorGeometry,
+  roomId: string,
+  edgeIndex: number,
+  widthIn: number,
+  depthIn: number,
+): FloorGeometry {
+  const span = exteriorRoomEdgeFloorSpan(geometry.rooms, roomId, edgeIndex);
+  if (!span) return geometry;
+  const room = roomFromAdjoinSpan(geometry, span, widthIn, depthIn);
+  if (!room) return geometry;
   return finalizeGeometry({
     ...geometry,
     rooms: [...geometry.rooms, room],
@@ -520,7 +563,13 @@ export function canAdjoinWall(
   const wall = geometry.walls.find(
     (w) => w.id === wallId || parentWallId(w.id) === parentWallId(wallId),
   );
-  return Boolean(wall && wall.kind === "exterior" && wall.roomIds.length === 1);
+  if (!wall || wall.kind !== "exterior") return false;
+  const span = exteriorWallFloorSpan(
+    geometry.rooms,
+    parentWallId(wallId),
+    geometry.walls,
+  );
+  return Boolean(span && span.length > 1e-3);
 }
 
 /** Map a wall hit to the room-edge used for placing openings. */
@@ -533,25 +582,33 @@ export function wallToRoomEdge(
 
   const base = parentWallId(wallId);
   if (base.startsWith("we:")) {
-    const parts = base.split(":");
-    const edgeIndex = Number(parts[parts.length - 2]);
-    const roomId = parts.slice(1, -2).join(":");
-    const room = geometry.rooms.find((r) => r.id === roomId);
-    if (!room || !Number.isFinite(edgeIndex)) return null;
-    const edge = roomEdge(room, edgeIndex);
-    if (!edge) return null;
-    // Span may be a remainder — approximate offset from floor span start
-    const span = exteriorWallFloorSpan(geometry.rooms, base);
-    if (!span) {
-      return { roomId, edgeIndex, spanOffsetIn: 0, spanLengthIn: edge.length };
+    const span = exteriorWallFloorSpan(geometry.rooms, base, geometry.walls);
+    if (!span) return null;
+    const room = geometry.rooms.find((r) => r.id === span.roomId);
+    if (!room) return null;
+    // Find matching edge index on the room
+    for (let i = 0; i < room.polygon.length; i += 1) {
+      const edge = roomEdge(room, i);
+      if (!edge) continue;
+      const onEdge =
+        Math.abs(
+          (span.a.x - edge.a.x) * edge.dir.y -
+            (span.a.y - edge.a.y) * edge.dir.x,
+        ) < 1e-3 &&
+        Math.abs(
+          (span.b.x - edge.a.x) * edge.dir.y -
+            (span.b.y - edge.a.y) * edge.dir.x,
+        ) < 1e-3;
+      if (!onEdge) continue;
+      const along = Math.hypot(span.a.x - edge.a.x, span.a.y - edge.a.y);
+      return {
+        roomId: span.roomId,
+        edgeIndex: i,
+        spanOffsetIn: along,
+        spanLengthIn: span.length,
+      };
     }
-    const along = Math.hypot(span.a.x - edge.a.x, span.a.y - edge.a.y);
-    return {
-      roomId,
-      edgeIndex,
-      spanOffsetIn: along,
-      spanLengthIn: span.length,
-    };
+    return null;
   }
 
   // Interior: pick first room id; find edge collinear with wall centerline
@@ -709,6 +766,116 @@ export function addOpeningOnWall(
     id: newOpeningId("open"),
     roomId: mapped.roomId,
     edgeIndex: mapped.edgeIndex,
+    offsetIn: offset,
+    widthIn: width,
+  };
+  return finalizeGeometry({
+    ...geometry,
+    openings: [...geometry.openings, opening],
+  });
+}
+
+export function addDoorOnRoomEdge(
+  geometry: FloorGeometry,
+  roomId: string,
+  edgeIndex: number,
+  preferredOffsetAlongEdge?: number,
+): FloorGeometry {
+  const room = geometry.rooms.find((r) => r.id === roomId);
+  if (!room) return geometry;
+  const edge = roomEdge(room, edgeIndex);
+  if (!edge) return geometry;
+  const width = DEFAULT_DOOR_WIDTH_IN;
+  const preferred =
+    preferredOffsetAlongEdge !== undefined
+      ? preferredOffsetAlongEdge
+      : edge.length / 2 - width / 2;
+  const offset = placeOpeningOffset(
+    geometry,
+    roomId,
+    edgeIndex,
+    width,
+    preferred,
+  );
+  if (offset === null) return geometry;
+  const door: PlanDoor = {
+    id: newOpeningId("door"),
+    roomId,
+    edgeIndex,
+    offsetIn: offset,
+    widthIn: width,
+    hingeEnd: "start",
+    swingSide: 1,
+  };
+  return finalizeGeometry({
+    ...geometry,
+    doors: [...geometry.doors, door],
+  });
+}
+
+export function addWindowOnRoomEdge(
+  geometry: FloorGeometry,
+  roomId: string,
+  edgeIndex: number,
+  preferredOffsetAlongEdge?: number,
+): FloorGeometry {
+  const room = geometry.rooms.find((r) => r.id === roomId);
+  if (!room) return geometry;
+  const edge = roomEdge(room, edgeIndex);
+  if (!edge) return geometry;
+  const width = DEFAULT_WINDOW_WIDTH_IN;
+  const preferred =
+    preferredOffsetAlongEdge !== undefined
+      ? preferredOffsetAlongEdge
+      : edge.length / 2 - width / 2;
+  const offset = placeOpeningOffset(
+    geometry,
+    roomId,
+    edgeIndex,
+    width,
+    preferred,
+  );
+  if (offset === null) return geometry;
+  const win: PlanWindow = {
+    id: newOpeningId("win"),
+    roomId,
+    edgeIndex,
+    offsetIn: offset,
+    widthIn: width,
+  };
+  return finalizeGeometry({
+    ...geometry,
+    windows: [...geometry.windows, win],
+  });
+}
+
+export function addOpeningOnRoomEdge(
+  geometry: FloorGeometry,
+  roomId: string,
+  edgeIndex: number,
+  preferredOffsetAlongEdge?: number,
+): FloorGeometry {
+  const room = geometry.rooms.find((r) => r.id === roomId);
+  if (!room) return geometry;
+  const edge = roomEdge(room, edgeIndex);
+  if (!edge) return geometry;
+  const width = DEFAULT_OPENING_WIDTH_IN;
+  const preferred =
+    preferredOffsetAlongEdge !== undefined
+      ? preferredOffsetAlongEdge
+      : edge.length / 2 - width / 2;
+  const offset = placeOpeningOffset(
+    geometry,
+    roomId,
+    edgeIndex,
+    width,
+    preferred,
+  );
+  if (offset === null) return geometry;
+  const opening: PlanOpening = {
+    id: newOpeningId("open"),
+    roomId,
+    edgeIndex,
     offsetIn: offset,
     widthIn: width,
   };

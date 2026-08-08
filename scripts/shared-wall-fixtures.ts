@@ -42,8 +42,13 @@ export function wallLen(wall: PlanWall): number {
   if (wall.centerline.length < 2) return 0;
   let total = 0;
   for (let i = 0; i < wall.centerline.length - 1; i += 1) {
-    const a = wall.centerline[i];
-    const b = wall.centerline[i + 1];
+    const a = wall.centerline[i]!;
+    const b = wall.centerline[i + 1]!;
+    total += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  if (wall.closed && wall.centerline.length > 2) {
+    const a = wall.centerline[wall.centerline.length - 1]!;
+    const b = wall.centerline[0]!;
     total += Math.hypot(b.x - a.x, b.y - a.y);
   }
   return total;

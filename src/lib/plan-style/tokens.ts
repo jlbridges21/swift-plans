@@ -95,7 +95,7 @@ export const planTokens = {
   /** Hit radius for label drag handles in document inches (scaled in editor). */
   labelHitRadiusIn: 14,
 
-  sheetMargin: 48,
+  sheetMargin: 72,
 
   doorSwing: {
     stroke: 1.1,

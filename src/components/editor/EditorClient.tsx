@@ -16,7 +16,7 @@ import {
 import { RoomTypePicker } from "@/components/editor/RoomTypePicker";
 import { RenameProjectForm } from "@/components/projects/ProjectManageForms";
 import { Button } from "@/components/ui/Button";
-import { saveFloorGeometry } from "@/lib/plan/actions";
+import { saveFloorGeometry, saveProjectStyleSettings } from "@/lib/plan/actions";
 import {
   addFloor,
   deleteFloor,
@@ -47,6 +47,7 @@ import {
   deleteRoom,
   deleteRoomVertex,
   deleteStairs,
+  finalizeGeometry,
   flipDoorHinge,
   flipDoorSwing,
   insertRoomVertex,
@@ -70,6 +71,10 @@ import { exteriorWallFloorSpan } from "@/lib/plan/derive-walls";
 import { listOpenings } from "@/lib/plan/openings";
 import { normalizeRoomType } from "@/lib/plan/room-types";
 import { formatMeasure, parseMeasure } from "@/lib/measure";
+import {
+  type LabelSizeStep,
+  type PlanStyleSettings,
+} from "@/lib/plan/style-settings";
 import type { FloorGeometry, PlanPoint } from "@/types/plan-geometry";
 
 export type SaveStatus =
@@ -88,10 +93,14 @@ type FloorSummary = {
 type EditorClientProps = {
   projectId: string;
   projectName: string;
+  initialStyle: PlanStyleSettings;
   initialFloorId: string;
   initialFloors: FloorSummary[];
   initialGeometries: Record<string, FloorGeometry>;
 };
+
+const WALL_THICKNESS_PRESETS = [3.5, 4, 4.5, 6, 8] as const;
+const LABEL_SIZE_OPTIONS: LabelSizeStep[] = ["sm", "md", "lg"];
 
 type FloorSheetMode =
   | { kind: "add" }
@@ -117,9 +126,31 @@ function statusLabel(status: SaveStatus): string {
   }
 }
 
+function styleWallOpts(style: PlanStyleSettings) {
+  return {
+    wallExteriorIn: style.wallExteriorIn,
+    wallInteriorIn: style.wallInteriorIn,
+  };
+}
+
+function prepareFloorGeometry(
+  raw: FloorGeometry,
+  style: PlanStyleSettings,
+): { geometry: FloorGeometry; didMigrate: boolean } {
+  const migrated = migrateGeometry(raw);
+  const geometry = finalizeGeometry(migrated.geometry, styleWallOpts(style));
+  const wallsChanged =
+    JSON.stringify(geometry.walls) !== JSON.stringify(migrated.geometry.walls);
+  return {
+    geometry,
+    didMigrate: migrated.didMigrate || wallsChanged,
+  };
+}
+
 function buildInitialHistories(
   floors: FloorSummary[],
   initialGeometries: Record<string, FloorGeometry>,
+  style: PlanStyleSettings,
 ): {
   map: Map<string, GeometryHistory>;
   migrateFloors: Set<string>;
@@ -127,9 +158,9 @@ function buildInitialHistories(
   const map = new Map<string, GeometryHistory>();
   const migrateFloors = new Set<string>();
   for (const floor of floors) {
-    const migrated = migrateGeometry(initialGeometries[floor.id]!);
-    map.set(floor.id, createGeometryHistory(migrated.geometry));
-    if (migrated.didMigrate) migrateFloors.add(floor.id);
+    const prepared = prepareFloorGeometry(initialGeometries[floor.id]!, style);
+    map.set(floor.id, createGeometryHistory(prepared.geometry));
+    if (prepared.didMigrate) migrateFloors.add(floor.id);
   }
   return { map, migrateFloors };
 }
@@ -150,11 +181,16 @@ function waitForSaveIdle(saveInFlightRef: RefObject<boolean>): Promise<void> {
 export function EditorClient({
   projectId,
   projectName,
+  initialStyle,
   initialFloorId,
   initialFloors,
   initialGeometries,
 }: EditorClientProps) {
-  const initial = buildInitialHistories(initialFloors, initialGeometries);
+  const initial = buildInitialHistories(
+    initialFloors,
+    initialGeometries,
+    initialStyle,
+  );
   const historiesRef = useRef(initial.map);
   const migrateSaveFloorsRef = useRef(initial.migrateFloors);
 
@@ -182,12 +218,16 @@ export function EditorClient({
   const [floorDeleteConfirm, setFloorDeleteConfirm] = useState("");
   const [floorActionError, setFloorActionError] = useState<string | null>(null);
   const [floorActionBusy, setFloorActionBusy] = useState(false);
+  const [style, setStyle] = useState(() => initialStyle);
+  const [styleSheetOpen, setStyleSheetOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [interacting, setInteracting] = useState(false);
   const [typing, setTyping] = useState(false);
 
   const historyRef = useRef(history);
+  const styleRef = useRef(initialStyle);
   const dirtyRef = useRef(false);
+  const styleDirtyRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(1000);
   const failCountRef = useRef(0);
@@ -232,7 +272,11 @@ export function EditorClient({
   );
 
   const performSave = useCallback(async () => {
-    if (!loadReadyRef.current || !dirtyRef.current || saveInFlightRef.current) {
+    if (
+      !loadReadyRef.current ||
+      (!dirtyRef.current && !styleDirtyRef.current) ||
+      saveInFlightRef.current
+    ) {
       return;
     }
     if (interactingRef.current || typingRef.current) return;
@@ -241,18 +285,46 @@ export function EditorClient({
     setSaveStatus(failCountRef.current > 0 ? "error-retrying" : "saving");
     const snapshot = historyRef.current.present;
     const floorId = floorIdRef.current;
+    const styleSnapshot = styleRef.current;
+    const saveGeometry = dirtyRef.current;
+    const saveStyle = styleDirtyRef.current;
 
     try {
-      const result = await saveFloorGeometry(floorId, snapshot);
-      if (result.ok) {
-        if (historyRef.current.present === snapshot) {
-          dirtyRef.current = false;
+      let hadError = false;
+
+      if (saveGeometry) {
+        const result = await saveFloorGeometry(floorId, snapshot);
+        if (result.ok) {
+          if (historyRef.current.present === snapshot) {
+            dirtyRef.current = false;
+          }
+          migrateSaveFloorsRef.current.delete(floorId);
+        } else {
+          hadError = true;
         }
-        migrateSaveFloorsRef.current.delete(floorId);
+      }
+
+      if (saveStyle && !hadError) {
+        const result = await saveProjectStyleSettings(
+          projectId,
+          styleSnapshot as Record<string, unknown>,
+        );
+        if (result.ok) {
+          if (styleRef.current === styleSnapshot) {
+            styleDirtyRef.current = false;
+          }
+        } else {
+          hadError = true;
+        }
+      }
+
+      if (!hadError) {
         failCountRef.current = 0;
         backoffRef.current = 1000;
-        setSaveStatus(dirtyRef.current ? "dirty" : "saved");
-        if (dirtyRef.current) {
+        setSaveStatus(
+          dirtyRef.current || styleDirtyRef.current ? "dirty" : "saved",
+        );
+        if (dirtyRef.current || styleDirtyRef.current) {
           clearSaveTimer();
           saveTimerRef.current = setTimeout(() => {
             void performSaveRef.current();
@@ -280,7 +352,7 @@ export function EditorClient({
     } finally {
       saveInFlightRef.current = false;
     }
-  }, [clearSaveTimer]);
+  }, [clearSaveTimer, projectId]);
 
   useEffect(() => {
     performSaveRef.current = performSave;
@@ -299,12 +371,25 @@ export function EditorClient({
     }, SAVE_DEBOUNCE_MS);
   }, [clearSaveTimer]);
 
+  const scheduleStyleSave = useCallback(() => {
+    if (!loadReadyRef.current) return;
+    styleDirtyRef.current = true;
+    setSaveStatus((s) =>
+      s === "error" || s === "error-retrying" ? s : "dirty",
+    );
+    clearSaveTimer();
+    if (interactingRef.current || typingRef.current) return;
+    saveTimerRef.current = setTimeout(() => {
+      void performSaveRef.current();
+    }, SAVE_DEBOUNCE_MS);
+  }, [clearSaveTimer]);
+
   const flushSaveNow = useCallback(async (): Promise<void> => {
     clearSaveTimer();
-    if (!dirtyRef.current) return;
+    if (!dirtyRef.current && !styleDirtyRef.current) return;
 
     await waitForSaveIdle(saveInFlightRef);
-    if (!dirtyRef.current) return;
+    if (!dirtyRef.current && !styleDirtyRef.current) return;
 
     await performSaveRef.current();
     await waitForSaveIdle(saveInFlightRef);
@@ -320,7 +405,9 @@ export function EditorClient({
   }, [initialFloorId, markMigrationDirty]);
 
   useEffect(() => {
-    if (!loadReadyRef.current || !dirtyRef.current) return;
+    if (!loadReadyRef.current || (!dirtyRef.current && !styleDirtyRef.current)) {
+      return;
+    }
     if (interacting || typing) {
       clearSaveTimer();
       return;
@@ -337,7 +424,8 @@ export function EditorClient({
 
   const commitGeometry = useCallback(
     (next: FloorGeometry) => {
-      setHistory((h) => historyPush(h, next));
+      const styled = finalizeGeometry(next, styleWallOpts(styleRef.current));
+      setHistory((h) => historyPush(h, styled));
       scheduleSave();
     },
     [scheduleSave],
@@ -351,14 +439,29 @@ export function EditorClient({
     const baseline = gestureBaselineRef.current;
     gestureBaselineRef.current = null;
     if (!baseline) return;
-    setHistory((h) => historyCommitGesture(h, baseline));
+    setHistory((h) => {
+      const present = finalizeGeometry(
+        h.present,
+        styleWallOpts(styleRef.current),
+      );
+      return historyCommitGesture(
+        { ...h, present },
+        baseline,
+      );
+    });
     scheduleSave();
   }, [scheduleSave]);
 
   const handleMoveRoom = useCallback((roomId: string, dx: number, dy: number) => {
     dirtyRef.current = true;
     setHistory((h) =>
-      historyReplacePresent(h, translateRoom(h.present, roomId, dx, dy)),
+      historyReplacePresent(
+        h,
+        finalizeGeometry(
+          translateRoom(h.present, roomId, dx, dy),
+          styleWallOpts(styleRef.current),
+        ),
+      ),
     );
   }, []);
 
@@ -366,7 +469,13 @@ export function EditorClient({
     (openingId: string, offsetIn: number) => {
       dirtyRef.current = true;
       setHistory((h) =>
-        historyReplacePresent(h, moveOpening(h.present, openingId, offsetIn)),
+        historyReplacePresent(
+          h,
+          finalizeGeometry(
+            moveOpening(h.present, openingId, offsetIn),
+            styleWallOpts(styleRef.current),
+          ),
+        ),
       );
     },
     [],
@@ -376,7 +485,13 @@ export function EditorClient({
     (stairsId: string, dx: number, dy: number) => {
       dirtyRef.current = true;
       setHistory((h) =>
-        historyReplacePresent(h, translateStairs(h.present, stairsId, dx, dy)),
+        historyReplacePresent(
+          h,
+          finalizeGeometry(
+            translateStairs(h.present, stairsId, dx, dy),
+            styleWallOpts(styleRef.current),
+          ),
+        ),
       );
     },
     [],
@@ -395,7 +510,10 @@ export function EditorClient({
       setHistory((h) =>
         historyReplacePresent(
           h,
-          moveRoomVertex(h.present, roomId, vertexIndex, x, y),
+          finalizeGeometry(
+            moveRoomVertex(h.present, roomId, vertexIndex, x, y),
+            styleWallOpts(styleRef.current),
+          ),
         ),
       );
     },
@@ -441,7 +559,7 @@ export function EditorClient({
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (typingRef.current || sheet || typePickerOpen || floorSheet) return;
+      if (typingRef.current || sheet || typePickerOpen || floorSheet || styleSheetOpen) return;
       const mod = e.metaKey || e.ctrlKey;
       if (!mod || e.key.toLowerCase() !== "z") return;
       e.preventDefault();
@@ -450,7 +568,7 @@ export function EditorClient({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [floorSheet, handleRedo, handleUndo, sheet, typePickerOpen]);
+  }, [floorSheet, handleRedo, handleUndo, sheet, styleSheetOpen, typePickerOpen]);
 
   function clearSelection() {
     setSelectedRoomId(null);
@@ -471,10 +589,13 @@ export function EditorClient({
 
       let nextHistory = historiesRef.current.get(nextId);
       if (!nextHistory) {
-        const migrated = migrateGeometry(initialGeometries[nextId]!);
-        nextHistory = createGeometryHistory(migrated.geometry);
+        const prepared = prepareFloorGeometry(
+          initialGeometries[nextId]!,
+          styleRef.current,
+        );
+        nextHistory = createGeometryHistory(prepared.geometry);
         historiesRef.current.set(nextId, nextHistory);
-        if (migrated.didMigrate) migrateSaveFloorsRef.current.add(nextId);
+        if (prepared.didMigrate) migrateSaveFloorsRef.current.add(nextId);
       }
 
       floorIdRef.current = nextId;
@@ -511,12 +632,15 @@ export function EditorClient({
           setFloorActionError(result.ok ? "Could not add floor." : result.error);
           return;
         }
-        const migrated = migrateGeometry(result.geometry);
+        const prepared = prepareFloorGeometry(
+          result.geometry,
+          styleRef.current,
+        );
         historiesRef.current.set(
           result.floor.id,
-          createGeometryHistory(migrated.geometry),
+          createGeometryHistory(prepared.geometry),
         );
-        if (migrated.didMigrate) migrateSaveFloorsRef.current.add(result.floor.id);
+        if (prepared.didMigrate) migrateSaveFloorsRef.current.add(result.floor.id);
         setFloors(result.floors);
         setFloorSheet(null);
         setFloorCustomName("");
@@ -536,12 +660,12 @@ export function EditorClient({
         );
         return;
       }
-      const migrated = migrateGeometry(result.geometry);
+      const prepared = prepareFloorGeometry(result.geometry, styleRef.current);
       historiesRef.current.set(
         result.floor.id,
-        createGeometryHistory(migrated.geometry),
+        createGeometryHistory(prepared.geometry),
       );
-      if (migrated.didMigrate) migrateSaveFloorsRef.current.add(result.floor.id);
+      if (prepared.didMigrate) migrateSaveFloorsRef.current.add(result.floor.id);
       setFloors(result.floors);
       await switchFloor(result.floor.id);
     });
@@ -642,7 +766,7 @@ export function EditorClient({
 
   const openAdjoinSheet = useCallback(() => {
     if (!selectedWallId || !wallCanAdjoin) return;
-    const span = exteriorWallFloorSpan(geometry.rooms, selectedWallId);
+    const span = exteriorWallFloorSpan(geometry.rooms, selectedWallId, geometry.walls);
     if (!span) return;
     setTyping(true);
     setSheet({
@@ -650,7 +774,7 @@ export function EditorClient({
       wallId: selectedWallId,
       defaultWidthIn: span.length,
     });
-  }, [geometry.rooms, selectedWallId, wallCanAdjoin]);
+  }, [geometry.rooms, geometry.walls, selectedWallId, wallCanAdjoin]);
 
   const sheetKey =
     sheet?.kind === "add"
@@ -664,27 +788,63 @@ export function EditorClient({
   const undoEnabled = canUndo(history);
   const redoEnabled = canRedo(history);
 
+  const patchStyle = useCallback(
+    (patch: Partial<PlanStyleSettings>) => {
+      setStyle((prev) => {
+        const next = { ...prev, ...patch };
+        styleRef.current = next;
+        return next;
+      });
+      scheduleStyleSave();
+    },
+    [scheduleStyleSave],
+  );
+
+  const applyWallThickness = useCallback(
+    (
+      patch: Partial<
+        Pick<PlanStyleSettings, "wallExteriorIn" | "wallInteriorIn">
+      >,
+    ) => {
+      const next = { ...styleRef.current, ...patch };
+      styleRef.current = next;
+      setStyle(next);
+      commitGeometry(
+        finalizeGeometry(historyRef.current.present, {
+          wallExteriorIn: next.wallExteriorIn,
+          wallInteriorIn: next.wallInteriorIn,
+        }),
+      );
+      scheduleStyleSave();
+    },
+    [commitGeometry, scheduleStyleSave],
+  );
+
   return (
-    <div className="flex w-full flex-1 flex-col">
-      <div className="border-b border-border bg-elevated">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-8">
-          <div className="flex min-w-0 flex-col gap-2">
+    <div
+      className={[
+        "fixed inset-0 z-0 flex flex-col overflow-hidden bg-paper",
+        "pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
+        "pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]",
+      ].join(" ")}
+    >
+      <header className="relative z-20 shrink-0 border-b border-border bg-elevated/95 backdrop-blur-sm">
+        <div className="flex items-center justify-between gap-3 px-3 py-2 sm:px-4">
+          <div className="flex min-w-0 items-center gap-3">
             <Link
               href="/dashboard"
-              className="text-sm font-medium text-accent hover:underline"
+              className="shrink-0 text-sm font-medium text-accent hover:underline"
             >
               ← Dashboard
             </Link>
-            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-              <h1 className="truncate text-xl font-semibold tracking-tight text-navy">
-                {projectName}
-              </h1>
-              <RenameProjectForm projectId={projectId} name={projectName} />
-            </div>
+            <h1 className="truncate text-base font-semibold tracking-tight text-navy sm:text-lg">
+              {projectName}
+            </h1>
+            <RenameProjectForm projectId={projectId} name={projectName} />
           </div>
           <button
             type="button"
-            className="self-start text-left text-sm text-fg-muted"
+            className="shrink-0 text-left text-xs text-fg-muted sm:text-sm"
             aria-live="polite"
             onClick={() => {
               if (saveStatus === "error" || saveStatus === "error-retrying") {
@@ -697,167 +857,13 @@ export function EditorClient({
             {statusLabel(saveStatus)}
           </button>
         </div>
-      </div>
+      </header>
 
-      <div className="mx-auto flex w-full flex-1 flex-col gap-4 px-5 py-4 sm:px-8 max-w-6xl">
-        <div className="flex flex-col gap-2">
-          <div
-            className="flex gap-1 overflow-x-auto pb-1"
-            role="tablist"
-            aria-label="Floors"
-          >
-            {floors.map((floor) => (
-              <button
-                key={floor.id}
-                type="button"
-                role="tab"
-                aria-selected={floor.id === activeFloorId}
-                className={[
-                  "inline-flex min-h-[var(--sp-touch-min)] shrink-0 items-center rounded-sm border px-3 text-sm font-medium",
-                  floor.id === activeFloorId
-                    ? "border-accent bg-tinted text-accent"
-                    : "border-border text-fg-muted hover:bg-tinted/50",
-                ].join(" ")}
-                onClick={() => void switchFloor(floor.id)}
-              >
-                {floor.name}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={floorActionBusy}
-              onClick={() => {
-                setFloorActionError(null);
-                setFloorCustomName("");
-                setFloorSheet({ kind: "add" });
-              }}
-            >
-              Add Floor
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={floorActionBusy}
-              onClick={handleDuplicateFloor}
-            >
-              Duplicate
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={floorActionBusy || !activeFloor}
-              onClick={() => {
-                if (!activeFloor) return;
-                setFloorActionError(null);
-                setFloorCustomName(activeFloor.name);
-                setFloorSheet({ kind: "rename", currentName: activeFloor.name });
-              }}
-            >
-              Rename
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={floorActionBusy || activeFloorIndex <= 0}
-              onClick={() => handleReorderFloor("up")}
-              aria-label="Move floor left"
-            >
-              ←
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={
-                floorActionBusy ||
-                activeFloorIndex < 0 ||
-                activeFloorIndex >= floors.length - 1
-              }
-              onClick={() => handleReorderFloor("down")}
-              aria-label="Move floor right"
-            >
-              →
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              className="text-danger hover:bg-danger/5"
-              disabled={floorActionBusy || floors.length <= 1 || !activeFloor}
-              onClick={() => {
-                if (!activeFloor) return;
-                setFloorActionError(null);
-                setFloorDeleteConfirm("");
-                setFloorSheet({ kind: "delete", floorName: activeFloor.name });
-              }}
-            >
-              Delete
-            </Button>
-          </div>
-
-          {floorActionError ? (
-            <p className="text-sm text-danger" role="alert">
-              {floorActionError}
-            </p>
-          ) : null}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            onClick={() => {
-              clearSelection();
-              setTyping(true);
-              setSheet({ kind: "add" });
-            }}
-          >
-            Add Room
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => {
-              clearSelection();
-              commitGeometry(addStairs(geometry));
-            }}
-          >
-            Add Stairs
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={!undoEnabled}
-            onClick={handleUndo}
-            aria-label="Undo"
-          >
-            Undo
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={!redoEnabled}
-            onClick={handleRedo}
-            aria-label="Redo"
-          >
-            Redo
-          </Button>
-          {selectedRoom ? (
-            <Button type="button" variant="secondary" onClick={openEditSheet}>
-              Edit {selectedRoom.name}
-            </Button>
-          ) : null}
-          {selectedWall && wallCanAdjoin ? (
-            <Button type="button" variant="secondary" onClick={openAdjoinSheet}>
-              Add Room Here
-            </Button>
-          ) : null}
-        </div>
-
-        <div className="overflow-hidden rounded-lg border border-border bg-elevated shadow-card">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div className="absolute inset-0">
           <EditorCanvas
             geometry={geometry}
+            style={style}
             selectedRoomId={selectedRoomId}
             selectedWallId={selectedWallId}
             selectedOpeningId={selectedOpeningId}
@@ -926,14 +932,180 @@ export function EditorClient({
           />
         </div>
 
-        {selectedRoom && !sheet ? (
-          <aside
-            className={[
-              "flex flex-col gap-3 rounded-lg border border-border bg-elevated p-4 shadow-card",
-              "sm:max-w-sm",
-            ].join(" ")}
-            aria-label={`${selectedRoom.name} controls`}
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-col gap-2 p-2 sm:p-3">
+          <div
+            className="pointer-events-auto flex gap-1 overflow-x-auto rounded-lg border border-border/80 bg-elevated/90 p-1 shadow-card backdrop-blur-sm"
+            role="tablist"
+            aria-label="Floors"
           >
+            {floors.map((floor) => (
+              <button
+                key={floor.id}
+                type="button"
+                role="tab"
+                aria-selected={floor.id === activeFloorId}
+                className={[
+                  "inline-flex min-h-[var(--sp-touch-min)] shrink-0 items-center rounded-sm border px-3 text-sm font-medium",
+                  floor.id === activeFloorId
+                    ? "border-accent bg-tinted text-accent"
+                    : "border-transparent text-fg-muted hover:bg-tinted/50",
+                ].join(" ")}
+                onClick={() => void switchFloor(floor.id)}
+              >
+                {floor.name}
+              </button>
+            ))}
+          </div>
+
+          <div className="pointer-events-auto flex max-h-[40dvh] flex-col gap-2 overflow-y-auto rounded-lg border border-border/80 bg-elevated/90 p-2 shadow-card backdrop-blur-sm sm:max-h-none sm:overflow-visible">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={floorActionBusy}
+                onClick={() => {
+                  setFloorActionError(null);
+                  setFloorCustomName("");
+                  setFloorSheet({ kind: "add" });
+                }}
+              >
+                Add Floor
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={floorActionBusy}
+                onClick={handleDuplicateFloor}
+              >
+                Duplicate
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={floorActionBusy || !activeFloor}
+                onClick={() => {
+                  if (!activeFloor) return;
+                  setFloorActionError(null);
+                  setFloorCustomName(activeFloor.name);
+                  setFloorSheet({ kind: "rename", currentName: activeFloor.name });
+                }}
+              >
+                Rename
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={floorActionBusy || activeFloorIndex <= 0}
+                onClick={() => handleReorderFloor("up")}
+                aria-label="Move floor left"
+              >
+                ←
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={
+                  floorActionBusy ||
+                  activeFloorIndex < 0 ||
+                  activeFloorIndex >= floors.length - 1
+                }
+                onClick={() => handleReorderFloor("down")}
+                aria-label="Move floor right"
+              >
+                →
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="text-danger hover:bg-danger/5"
+                disabled={floorActionBusy || floors.length <= 1 || !activeFloor}
+                onClick={() => {
+                  if (!activeFloor) return;
+                  setFloorActionError(null);
+                  setFloorDeleteConfirm("");
+                  setFloorSheet({ kind: "delete", floorName: activeFloor.name });
+                }}
+              >
+                Delete
+              </Button>
+            </div>
+
+            {floorActionError ? (
+              <p className="text-sm text-danger" role="alert">
+                {floorActionError}
+              </p>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                onClick={() => {
+                  clearSelection();
+                  setTyping(true);
+                  setSheet({ kind: "add" });
+                }}
+              >
+                Add Room
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  clearSelection();
+                  commitGeometry(addStairs(geometry));
+                }}
+              >
+                Add Stairs
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!undoEnabled}
+                onClick={handleUndo}
+                aria-label="Undo"
+              >
+                Undo
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!redoEnabled}
+                onClick={handleRedo}
+                aria-label="Redo"
+              >
+                Redo
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setStyleSheetOpen(true)}
+              >
+                Style
+              </Button>
+              {selectedRoom ? (
+                <Button type="button" variant="secondary" onClick={openEditSheet}>
+                  Edit {selectedRoom.name}
+                </Button>
+              ) : null}
+              {selectedWall && wallCanAdjoin ? (
+                <Button type="button" variant="secondary" onClick={openAdjoinSheet}>
+                  Add Room Here
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex flex-col items-stretch gap-2 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:items-end sm:p-3">
+          {selectedRoom && !sheet ? (
+            <aside
+              className={[
+                "pointer-events-auto flex max-h-[45dvh] w-full flex-col gap-3 overflow-y-auto",
+                "rounded-lg border border-border/80 bg-elevated/95 p-4 shadow-card backdrop-blur-sm",
+                "sm:max-w-sm",
+              ].join(" ")}
+              aria-label={`${selectedRoom.name} controls`}
+            >
             <p className="text-sm font-semibold text-navy">{selectedRoom.name}</p>
             <p className="text-sm text-fg-muted">
               {(() => {
@@ -1017,14 +1189,15 @@ export function EditorClient({
           </aside>
         ) : null}
 
-        {selectedWall && !sheet ? (
-          <aside
-            className={[
-              "flex flex-col gap-3 rounded-lg border border-border bg-elevated p-4 shadow-card",
-              "sm:max-w-sm",
-            ].join(" ")}
-            aria-label="Wall controls"
-          >
+          {selectedWall && !sheet ? (
+            <aside
+              className={[
+                "pointer-events-auto flex max-h-[45dvh] w-full flex-col gap-3 overflow-y-auto",
+                "rounded-lg border border-border/80 bg-elevated/95 p-4 shadow-card backdrop-blur-sm",
+                "sm:max-w-sm",
+              ].join(" ")}
+              aria-label="Wall controls"
+            >
             <p className="text-sm font-semibold text-navy">
               {selectedWall.kind === "interior" ? "Interior wall" : "Exterior wall"}
             </p>
@@ -1076,14 +1249,15 @@ export function EditorClient({
           </aside>
         ) : null}
 
-        {selectedOpening && !sheet ? (
-          <aside
-            className={[
-              "flex flex-col gap-3 rounded-lg border border-border bg-elevated p-4 shadow-card",
-              "sm:max-w-sm",
-            ].join(" ")}
-            aria-label="Opening controls"
-          >
+          {selectedOpening && !sheet ? (
+            <aside
+              className={[
+                "pointer-events-auto flex max-h-[45dvh] w-full flex-col gap-3 overflow-y-auto",
+                "rounded-lg border border-border/80 bg-elevated/95 p-4 shadow-card backdrop-blur-sm",
+                "sm:max-w-sm",
+              ].join(" ")}
+              aria-label="Opening controls"
+            >
             <p className="text-sm font-semibold text-navy">
               {selectedOpening.kind === "door"
                 ? "Door"
@@ -1154,14 +1328,15 @@ export function EditorClient({
           </aside>
         ) : null}
 
-        {selectedStairs && !sheet ? (
-          <aside
-            className={[
-              "flex flex-col gap-3 rounded-lg border border-border bg-elevated p-4 shadow-card",
-              "sm:max-w-sm",
-            ].join(" ")}
-            aria-label="Stairs controls"
-          >
+          {selectedStairs && !sheet ? (
+            <aside
+              className={[
+                "pointer-events-auto flex max-h-[45dvh] w-full flex-col gap-3 overflow-y-auto",
+                "rounded-lg border border-border/80 bg-elevated/95 p-4 shadow-card backdrop-blur-sm",
+                "sm:max-w-sm",
+              ].join(" ")}
+              aria-label="Stairs controls"
+            >
             <p className="text-sm font-semibold text-navy">
               Stairs ({selectedStairs.direction.toUpperCase()})
             </p>
@@ -1219,6 +1394,7 @@ export function EditorClient({
             </div>
           </aside>
         ) : null}
+        </div>
       </div>
 
       {sheet ? (
@@ -1413,6 +1589,191 @@ export function EditorClient({
                 </Button>
               </div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {styleSheetOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-end justify-center bg-navy/40 p-4 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="style-sheet-title"
+        >
+          <div
+            className={[
+              "pointer-events-auto w-full max-w-md rounded-t-lg border border-border bg-elevated p-5 shadow-card",
+              "max-h-[85dvh] overflow-y-auto sm:rounded-lg",
+            ].join(" ")}
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <h2
+                id="style-sheet-title"
+                className="text-lg font-semibold text-navy"
+              >
+                Plan style
+              </h2>
+              <button
+                type="button"
+                className="inline-flex min-h-[var(--sp-touch-min)] min-w-[var(--sp-touch-min)] items-center justify-center rounded-sm text-fg-muted hover:bg-tinted hover:text-navy"
+                aria-label="Close"
+                onClick={() => setStyleSheetOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-5">
+              <section className="flex flex-col gap-3">
+                <h3 className="text-sm font-semibold text-navy">Wall thickness</h3>
+                <label className="flex flex-col gap-1.5 text-sm">
+                  <span className="font-medium text-navy">Exterior</span>
+                  <input
+                    className="min-h-[var(--sp-touch-min)] rounded-sm border border-border px-3 text-base"
+                    inputMode="decimal"
+                    defaultValue={formatMeasure(style.wallExteriorIn)}
+                    key={`ext-${style.wallExteriorIn}`}
+                    onFocus={() => setTyping(true)}
+                    onBlur={(e) => {
+                      setTyping(false);
+                      const parsed = parseMeasure(e.target.value);
+                      if (parsed.ok && parsed.inches !== style.wallExteriorIn) {
+                        applyWallThickness({ wallExteriorIn: parsed.inches });
+                      }
+                    }}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {WALL_THICKNESS_PRESETS.map((preset) => (
+                    <Button
+                      key={`ext-${preset}`}
+                      type="button"
+                      variant={
+                        style.wallExteriorIn === preset ? "primary" : "secondary"
+                      }
+                      onClick={() =>
+                        applyWallThickness({ wallExteriorIn: preset })
+                      }
+                    >
+                      {formatMeasure(preset)}
+                    </Button>
+                  ))}
+                </div>
+                <label className="flex flex-col gap-1.5 text-sm">
+                  <span className="font-medium text-navy">Interior</span>
+                  <input
+                    className="min-h-[var(--sp-touch-min)] rounded-sm border border-border px-3 text-base"
+                    inputMode="decimal"
+                    defaultValue={formatMeasure(style.wallInteriorIn)}
+                    key={`int-${style.wallInteriorIn}`}
+                    onFocus={() => setTyping(true)}
+                    onBlur={(e) => {
+                      setTyping(false);
+                      const parsed = parseMeasure(e.target.value);
+                      if (parsed.ok && parsed.inches !== style.wallInteriorIn) {
+                        applyWallThickness({ wallInteriorIn: parsed.inches });
+                      }
+                    }}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {WALL_THICKNESS_PRESETS.map((preset) => (
+                    <Button
+                      key={`int-${preset}`}
+                      type="button"
+                      variant={
+                        style.wallInteriorIn === preset ? "primary" : "secondary"
+                      }
+                      onClick={() =>
+                        applyWallThickness({ wallInteriorIn: preset })
+                      }
+                    >
+                      {formatMeasure(preset)}
+                    </Button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="flex flex-col gap-3">
+                <h3 className="text-sm font-semibold text-navy">Labels</h3>
+                <div className="flex flex-wrap gap-2">
+                  {LABEL_SIZE_OPTIONS.map((size) => (
+                    <Button
+                      key={size}
+                      type="button"
+                      variant={style.labelSize === size ? "primary" : "secondary"}
+                      onClick={() => patchStyle({ labelSize: size })}
+                    >
+                      {size.toUpperCase()}
+                    </Button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold text-navy">Display</h3>
+                <label className="flex min-h-[var(--sp-touch-min)] items-center gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={style.showRoomDimensions}
+                    onChange={(e) =>
+                      patchStyle({ showRoomDimensions: e.target.checked })
+                    }
+                  />
+                  <span>Room dimensions</span>
+                </label>
+                <label className="flex min-h-[var(--sp-touch-min)] items-center gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={style.showRoomAreas}
+                    onChange={(e) =>
+                      patchStyle({ showRoomAreas: e.target.checked })
+                    }
+                  />
+                  <span>Room areas</span>
+                </label>
+                <label className="flex min-h-[var(--sp-touch-min)] items-center gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={style.showTotalArea}
+                    onChange={(e) =>
+                      patchStyle({ showTotalArea: e.target.checked })
+                    }
+                  />
+                  <span>Total area</span>
+                </label>
+                <label className="flex min-h-[var(--sp-touch-min)] items-center gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={style.showRoomFills}
+                    onChange={(e) =>
+                      patchStyle({ showRoomFills: e.target.checked })
+                    }
+                  />
+                  <span>Room fills</span>
+                </label>
+                <label className="flex min-h-[var(--sp-touch-min)] items-center gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={style.showFloorTexture}
+                    onChange={(e) =>
+                      patchStyle({ showFloorTexture: e.target.checked })
+                    }
+                  />
+                  <span>Floor texture</span>
+                </label>
+                <label className="flex min-h-[var(--sp-touch-min)] items-center gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={style.showDoorSwings}
+                    onChange={(e) =>
+                      patchStyle({ showDoorSwings: e.target.checked })
+                    }
+                  />
+                  <span>Door swings</span>
+                </label>
+              </section>
+            </div>
           </div>
         </div>
       ) : null}

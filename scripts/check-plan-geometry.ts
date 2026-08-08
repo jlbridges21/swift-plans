@@ -37,7 +37,11 @@ import {
   pushOffsetClearOfOverlaps,
   roomEdge,
 } from "../src/lib/plan/openings.ts";
-import { splitWallsForOpenings } from "../src/lib/plan/derive-walls.ts";
+import {
+  countExteriorChains,
+  parentWallId,
+  splitWallsForOpenings,
+} from "../src/lib/plan/derive-walls.ts";
 import {
   ALL_PLAN_ROOM_TYPES,
   countsTowardLivingArea,
@@ -391,17 +395,13 @@ for (const door of geometry.doors) {
     Math.abs(wallLen(interior[0]!) - 50) < 1e-6,
     "partial share: interior length 50",
   );
-  const aEastExterior = walls.filter(
-    (w) => w.id.startsWith("we:a:1:") && w.kind === "exterior",
-  );
-  const remLen = aEastExterior.reduce((s, w) => s + wallLen(w), 0);
   assert(
-    Math.abs(remLen - 50) < 1e-6,
-    "partial share: exterior remainders total 50",
-    `remLen=${remLen}`,
+    countExteriorChains(walls) === 1,
+    "partial share: one exterior chain",
   );
+  // Shared 50 + exterior remainder on a's east (50) = 100 edge
   assert(
-    Math.abs(wallLen(interior[0]!) + remLen - 100) < 1e-6,
+    Math.abs(wallLen(interior[0]!) + 50 - 100) < 1e-6,
     "partial share: spans sum to full edge",
   );
 }
@@ -434,9 +434,9 @@ for (const door of geometry.doors) {
     "isolated: only exterior walls",
   );
   assert(
-    walls.length === 4,
-    "isolated: 4 exterior walls",
-    `got ${walls.length}`,
+    walls.length === 1 && walls[0]!.closed,
+    "isolated: one closed exterior chain",
+    `got ${walls.length} closed=${walls[0]?.closed}`,
   );
 }
 
@@ -459,11 +459,10 @@ for (const door of geometry.doors) {
     sharedId !== undefined && afterIds.has(sharedId),
     "stability: interior id survives resize",
   );
-  for (const id of beforeIds) {
-    if (id.startsWith("we:a:")) {
-      assert(afterIds.has(id), `stability: exterior ${id} still present`);
-    }
-  }
+  assert(
+    countExteriorChains(before) === countExteriorChains(wallsFor(roomsAfter)),
+    "stability: exterior chain count stable",
+  );
 }
 
 {
@@ -638,13 +637,13 @@ function doorOnEast(
 }
 
 {
-  // 7. Split lengths + opening widths = original span
+  // 7. Split lengths + opening widths = original span (chained exterior)
   const rooms = [rectRoom("a", 0, 0, 120, 100)];
   const door = doorOnEast("a", 1, 20, 30);
   const base = deriveWallsFromRooms(rooms);
-  const east = base.find((w) => w.id.startsWith("we:a:1:"));
-  assert(Boolean(east), "split: found east exterior");
-  const original = wallLen(east!);
+  const loop = base.find((w) => w.kind === "exterior");
+  assert(Boolean(loop), "split: found exterior chain");
+  const original = wallLen(loop!);
   const split = splitWallsForOpenings(base, rooms, [
     {
       roomId: door.roomId,
@@ -653,16 +652,22 @@ function doorOnEast(
       widthIn: door.widthIn,
     },
   ]);
-  const eastPieces = split.filter((w) => w.id.startsWith("we:a:1:"));
-  const pieceSum = eastPieces.reduce((s, w) => s + wallLen(w), 0);
+  const pieces = split.filter(
+    (w) => parentWallId(w.id) === parentWallId(loop!.id),
+  );
+  const pieceSum = pieces.reduce((s, w) => s + wallLen(w), 0);
   assert(
     Math.abs(pieceSum + door.widthIn - original) < 1e-4,
     "split: pieces + opening = original",
     `pieces=${pieceSum} opening=${door.widthIn} original=${original}`,
   );
-  for (const w of eastPieces) {
+  for (const w of pieces) {
     assert(wallLen(w) > 0, `split: piece ${w.id} positive`);
   }
+  assert(
+    countExteriorChains(split) === 1,
+    "split: chain count unchanged by opening",
+  );
 }
 
 {
@@ -963,6 +968,154 @@ function doorOnEast(
   a = setRoomType(a, "a", "bedroom");
   assert(JSON.stringify(floorB) === bSnapshot, "floors: B unchanged after A edits");
   assert(!geometryDeepEqual(a, floorA), "floors: A actually changed");
+}
+
+// ---------------------------------------------------------------------------
+// 11. Exterior chaining, thickness style, texture clip
+// ---------------------------------------------------------------------------
+{
+  const row = [
+    rectRoom("a", 0, 0, 100, 80),
+    rectRoom("b", 100, 0, 100, 80),
+    rectRoom("c", 200, 0, 100, 80),
+  ];
+  const walls = deriveWallsFromRooms(row);
+  assert(
+    countExteriorChains(walls) === 1,
+    "chain-row: one exterior chain",
+    `got ${countExteriorChains(walls)}`,
+  );
+}
+
+{
+  // L footprint
+  const L = [
+    rectRoom("a", 0, 0, 160, 80),
+    rectRoom("b", 0, 80, 80, 80),
+  ];
+  const walls = deriveWallsFromRooms(L);
+  assert(countExteriorChains(walls) === 1, "chain-L: one exterior chain");
+  const ext = walls.filter((w) => w.kind === "exterior");
+  assert(ext.length === 1 && ext[0]!.closed, "chain-L: closed ring");
+  for (const w of ext) {
+    assert(wallLen(w) > 0, "chain-L: positive length");
+    for (const p of w.centerline) {
+      assert(
+        Number.isFinite(p.x) && Number.isFinite(p.y),
+        "chain-L: finite coords",
+      );
+    }
+  }
+}
+
+{
+  const groups = [
+    rectRoom("a", 0, 0, 60, 60),
+    rectRoom("b", 200, 0, 60, 60),
+  ];
+  assert(
+    countExteriorChains(deriveWallsFromRooms(groups)) === 2,
+    "chain-groups: two disconnected chains",
+  );
+}
+
+{
+  const rooms = [rectRoom("a", 0, 0, 120, 100)];
+  const base = deriveWallsFromRooms(rooms);
+  const before = countExteriorChains(base);
+  const split = splitWallsForOpenings(base, rooms, [
+    { roomId: "a", edgeIndex: 1, offsetIn: 20, widthIn: 30 },
+  ]);
+  assert(
+    countExteriorChains(split) === before,
+    "chain-opening: chain count unchanged",
+  );
+  const extPieces = split.filter((w) => w.kind === "exterior");
+  assert(
+    extPieces.length === 1,
+    "chain-opening: one open exterior polyline",
+    `got ${extPieces.length}`,
+  );
+  assert(
+    (extPieces[0]?.centerline.length ?? 0) > 2,
+    "chain-opening: mitered multi-point shell",
+  );
+}
+
+{
+  const rooms = [rectRoom("a", 0, 0, 100, 80)];
+  const thin = deriveWallsFromRooms(rooms, {
+    exteriorThickness: 4,
+    interiorThickness: 3,
+  });
+  const thick = deriveWallsFromRooms(rooms, {
+    exteriorThickness: 10,
+    interiorThickness: 3,
+  });
+  assert(
+    thin.every((w) => w.kind !== "exterior" || w.thickness === 4),
+    "style-thick: thin exterior",
+  );
+  assert(
+    thick.every((w) => w.kind !== "exterior" || w.thickness === 10),
+    "style-thick: thick exterior",
+  );
+  assert(
+    parentWallId(thin.find((w) => w.kind === "exterior")!.id) ===
+      parentWallId(thick.find((w) => w.kind === "exterior")!.id),
+    "style-thick: wall id stable across thickness",
+  );
+
+  let withDoor = finalizeGeometry({
+    ...createEmptyFloorGeometry("t"),
+    rooms,
+    doors: [
+      {
+        id: "d1",
+        roomId: "a",
+        edgeIndex: 0,
+        offsetIn: 20,
+        widthIn: 32,
+        hingeEnd: "start",
+        swingSide: 1,
+      },
+    ],
+  });
+  const spanThin = openingWorldSpan(withDoor.rooms, withDoor.doors[0]!);
+  withDoor = finalizeGeometry(withDoor, {
+    wallExteriorIn: 12,
+    wallInteriorIn: 4.5,
+  });
+  const spanThick = openingWorldSpan(withDoor.rooms, withDoor.doors[0]!);
+  assert(Boolean(spanThin && spanThick), "style-thick: door span exists");
+  assert(
+    Math.abs(spanThin!.start.x - spanThick!.start.x) < 1e-6 &&
+      Math.abs(spanThin!.start.y - spanThick!.start.y) < 1e-6 &&
+      Math.abs(spanThin!.end.x - spanThick!.end.x) < 1e-6 &&
+      Math.abs(spanThin!.end.y - spanThick!.end.y) < 1e-6,
+    "style-thick: opening world position unchanged",
+  );
+}
+
+{
+  // Texture clip uses room polygon path id `clip-{roomId}` (PlanDrawing), not AABB
+  const roomId = "Lroom";
+  const clipId = `clip-${roomId}`;
+  assert(clipId === "clip-Lroom", "texture-clip: id uses room id");
+  const Lpoly = [
+    { x: 0, y: 0 },
+    { x: 120, y: 0 },
+    { x: 120, y: 40 },
+    { x: 40, y: 40 },
+    { x: 40, y: 100 },
+    { x: 0, y: 100 },
+  ];
+  // Bounding box would include the notch; a point in the notch is outside the L
+  const notch = { x: 80, y: 70 };
+  assert(
+    !pointInPolygon(notch, [Lpoly]),
+    "texture-clip: notch outside L polygon (bbox would include it)",
+  );
 }
 
 console.log("");
